@@ -1,0 +1,340 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum userStatus {
+  active
+  inactive
+  deleted
+}
+
+enum userRole {
+  superadmin
+  admin
+  supervisor
+  employee
+}
+
+enum leaveStatus {
+  pending
+  approved
+  rejected
+}
+
+enum PresenceStatus {
+  available
+  away
+  offline
+}
+
+model User {
+  id           String     @id @default(cuid())
+  username     String     @unique
+  email        String
+  password     String
+  companyId    String?
+  departmentId String?
+  role         userRole   @default(admin)
+  status       userStatus @default(active)
+  createdAt    DateTime   @default(now()) @db.Timestamptz
+  updatedAt    DateTime   @updatedAt @db.Timestamptz
+
+  profile    UserProfile?
+  presence   UserPresence?
+  company    Company?      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  department Department?   @relation("DepartmentUsers", fields: [departmentId], references: [id])
+
+  supervisedDepartments Department[]          @relation("DepartmentSupervisor")
+  UserRate              UserRate[]
+  Deduction             Deduction[]
+  Payroll               Payroll[]
+  TimeLog               TimeLog[]
+  LocationRestriction   LocationRestriction[]
+  UserActivity          UserActivity[]
+  UserShift             UserShift[]
+  Leave                 Leave[]
+  ApprovedLeaves        Leave[]               @relation("approver")
+  Subscription          Subscription[]
+
+  @@unique([companyId, email])
+}
+
+model UserProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  username    String   @unique
+  email       String
+  firstName   String?
+  lastName    String?
+  phoneNumber String?
+  createdAt   DateTime @default(now()) @db.Timestamptz
+  updatedAt   DateTime @default(now()) @db.Timestamptz
+}
+
+model UserPresence {
+  id             String         @id @default(cuid())
+  userId         String         @unique
+  presenceStatus PresenceStatus @default(available)
+  lastActiveAt   DateTime       @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Company {
+  id            String          @id @default(cuid())
+  name          String          @unique
+  userId        String          @unique
+  createdAt     DateTime        @default(now()) @db.Timestamptz
+  updatedAt     DateTime        @default(now()) @db.Timestamptz
+  country       String?
+  currency      String?
+  language      String?
+  Department    Department[]
+  User          User[]
+  Tax           Tax[]
+  Location      Location[]
+  Shift         Shift[]
+  Subscription  Subscription[]
+  ShiftSchedule ShiftSchedule[]
+  Holiday       Holiday[]
+}
+
+model Department {
+  id           String   @id @default(cuid())
+  companyId    String
+  name         String
+  supervisorId String?
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @default(now()) @db.Timestamptz
+  supervisor   User?    @relation("DepartmentSupervisor", fields: [supervisorId], references: [id])
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  users        User[]   @relation("DepartmentUsers")
+}
+
+model UserRate {
+  id         String   @id @default(cuid())
+  userId     String
+  hourlyRate Decimal  @db.Decimal(10, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz
+  updatedAt  DateTime @default(now()) @db.Timestamptz
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Tax {
+  id        String   @id @default(cuid())
+  companyId String
+  taxName   String
+  taxRate   Decimal  @db.Decimal(5, 2)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @default(now()) @db.Timestamptz
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Deduction {
+  id            String   @id @default(cuid())
+  userId        String
+  deductionName String
+  amount        Decimal  @db.Decimal(10, 2)
+  createdAt     DateTime @default(now()) @db.Timestamptz
+  updatedAt     DateTime @default(now()) @db.Timestamptz
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Payroll {
+  id          String   @id @default(cuid())
+  userId      String
+  grossSalary Decimal  @db.Decimal(10, 2)
+  tax         Decimal  @db.Decimal(10, 2)
+  deductions  Decimal  @db.Decimal(10, 2)
+  netSalary   Decimal  @db.Decimal(10, 2)
+  payrollDate DateTime @db.Timestamptz
+  createdAt   DateTime @default(now()) @db.Timestamptz
+  updatedAt   DateTime @default(now()) @db.Timestamptz
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Payment {
+  id                String   @id @default(cuid())
+  stripeId          String
+  companyName       String
+  email             String
+  amount            Decimal  @db.Decimal(10, 2)
+  paymentMethod     String?
+  paymentMethodType String?
+  cardLast4         String?
+  cardBrand         String?
+  cardExpMonth      Int?
+  cardExpYear       Int?
+  paymentReceiptUrl String?
+  paymentIntentId   String?
+  planId            String?
+  paymentStatus     String?
+  paymentDate       DateTime @default(now()) @db.Timestamptz
+  createdAt         DateTime @default(now()) @db.Timestamptz
+  updatedAt         DateTime @default(now()) @db.Timestamptz
+}
+
+model Location {
+  id                  String                @id @default(cuid())
+  companyId           String
+  name                String?
+  latitude            Decimal               @db.Decimal(9, 6)
+  longitude           Decimal               @db.Decimal(9, 6)
+  radius              Decimal?              @db.Decimal(6, 2)
+  createdAt           DateTime              @default(now()) @db.Timestamptz
+  updatedAt           DateTime              @default(now()) @db.Timestamptz
+  company             Company               @relation(fields: [companyId], references: [id])
+  LocationRestriction LocationRestriction[]
+}
+
+model LocationRestriction {
+  id                String   @id @default(cuid())
+  userId            String
+  locationId        String
+  restrictionStatus Boolean  @default(true)
+  createdAt         DateTime @default(now()) @db.Timestamptz
+  updatedAt         DateTime @default(now()) @db.Timestamptz
+  user              User     @relation(fields: [userId], references: [id])
+  location          Location @relation(fields: [locationId], references: [id])
+
+  @@unique([userId, locationId])
+}
+
+model UserActivity {
+  id                  String   @id @default(cuid())
+  userId              String
+  activityDescription String
+  createdAt           DateTime @default(now()) @db.Timestamptz
+  user                User     @relation(fields: [userId], references: [id])
+}
+
+model Shift {
+  id                     String   @id @default(cuid())
+  companyId              String
+  shiftName              String
+  startTime              DateTime @db.Time
+  endTime                DateTime @db.Time
+  crossesMidnight        Boolean  @default(false)
+  differentialMultiplier Decimal  @default(1.0)
+  createdAt              DateTime @default(now()) @db.Timestamptz
+  updatedAt              DateTime @updatedAt @db.Timestamptz
+
+  company       Company         @relation(fields: [companyId], references: [id])
+  UserShift     UserShift[]
+  ShiftSchedule ShiftSchedule[]
+}
+
+model ShiftSchedule {
+  id                String    @id @default(cuid())
+  companyId         String
+  shiftId           String
+  recurrencePattern String
+  startDate         DateTime
+  endDate           DateTime?
+  assignedToAll     Boolean   @default(false)
+  assignedUserId    String?
+  createdAt         DateTime  @default(now()) @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shift   Shift   @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+}
+
+model UserShift {
+  id           String   @id @default(cuid())
+  userId       String
+  shiftId      String
+  assignedDate DateTime @db.Timestamptz
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
+
+  user            User              @relation(fields: [userId], references: [id])
+  shift           Shift             @relation(fields: [shiftId], references: [id])
+  ShiftRecurrence ShiftRecurrence[]
+}
+
+model ShiftRecurrence {
+  id                String   @id @default(cuid())
+  userShiftId       String
+  recurrencePattern String
+  createdAt         DateTime @default(now()) @db.Timestamptz
+  updatedAt         DateTime @updatedAt @db.Timestamptz
+
+  userShift UserShift @relation(fields: [userShiftId], references: [id])
+}
+
+model TimeLog {
+  id           String    @id @default(cuid())
+  userId       String
+  timeIn       DateTime  @db.Timestamptz
+  timeOut      DateTime? @db.Timestamptz
+  coffeeBreaks Json?
+  lunchBreak   Json?
+  deviceInfo   Json?
+  location     Json?
+  status       Boolean   @default(true)
+  createdAt    DateTime  @default(now()) @db.Timestamptz
+  updatedAt    DateTime  @default(now()) @db.Timestamptz
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Holiday {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  date        DateTime @db.Date
+  description String?
+  createdAt   DateTime @default(now()) @db.Timestamptz
+  updatedAt   DateTime @default(now()) @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Leave {
+  id               String   @id @default(cuid())
+  userId           String
+  approverId       String?
+  leaveType        String
+  startDate        DateTime @db.Timestamptz
+  endDate          DateTime @db.Timestamptz
+  status           String   @default("pending")
+  leaveReason      String?
+  approverComments String?
+  createdAt        DateTime @default(now()) @db.Timestamptz
+  updatedAt        DateTime @default(now()) @db.Timestamptz
+  User             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approver         User?    @relation("approver", fields: [approverId], references: [id], onDelete: SetNull)
+}
+
+model SubscriptionPlan {
+  id           String         @id @default(cuid())
+  name         String
+  rangeOfUsers String
+  description  String?
+  price        Decimal        @db.Decimal(10, 2)
+  features     Json
+  createdAt    DateTime       @default(now()) @db.Timestamptz
+  updatedAt    DateTime       @default(now()) @db.Timestamptz
+  Subscription Subscription[]
+}
+
+model Subscription {
+  id        String           @id @default(cuid())
+  userId    String
+  companyId String
+  planId    String
+  startDate DateTime         @default(now()) @db.Timestamptz
+  endDate   DateTime?        @db.Timestamptz
+  active    Boolean          @default(true)
+  createdAt DateTime         @default(now()) @db.Timestamptz
+  updatedAt DateTime         @default(now()) @db.Timestamptz
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  plan      SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+}
