@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "seed": "node prisma/seed.js",
-    "migrate": "npx prisma migrate dev --name update-payment-model"
+    "seed": "node src/prisma/seed.js",
+    "prisma:deploy": "npx prisma generate --schema=src/prisma/schema.prisma && npx prisma migrate deploy --schema=src/prisma/schema.prisma && npm run seed"
   },
   "prisma": {
     "schema": "src/prisma/schema.prisma"
