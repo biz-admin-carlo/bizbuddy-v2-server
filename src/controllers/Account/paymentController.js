@@ -13,14 +13,18 @@ const createPaymentIntent = async (req, res) => {
     if (!amount || !planId) {
       return res.status(400).json({ message: "Amount and planId are required." });
     }
-    // Convert dollars to cents using Math.round to avoid floating point issues.
+
+    if (Number(amount) === 0) {
+      return res.status(200).json({
+        message: "No payment required for free plan.",
+        data: { clientSecret: null },
+      });
+    }
     const amountCents = Math.round(amount * 100);
 
-    // Default values if not provided by client.
     let email = req.body.email || "N/A";
     let companyId = req.body.companyId || "N/A";
 
-    // If auth middleware attached req.user, override email and companyId.
     if (req.user) {
       email = req.user.email;
       companyId = req.user.companyId;
@@ -38,23 +42,13 @@ const createPaymentIntent = async (req, res) => {
       data: { clientSecret: paymentIntent.client_secret },
     });
   } catch (error) {
-    console.error("Error in createPaymentIntent:", error);
+    console.error("Error in createPaymentIntent: ", error);
     return res.status(500).json({ message: "Internal server error." });
   }
 };
 
-/**
- * POST /api/payments/create-upgrade-payment-intent
- * Creates a PaymentIntent specifically for subscription upgrades.
- * Expects: { amount (in dollars), planId }
- *
- * This endpoint decodes the token from the Authorization header,
- * then retrieves the user's email and the company's name from the database.
- * These values are then passed in Stripe metadata.
- */
 const createUpgradePaymentIntent = async (req, res) => {
   try {
-    // Extract the token from the Authorization header.
     const authHeader = req.headers.authorization;
     if (!authHeader) {
       return res.status(401).json({ message: "Access token missing." });
@@ -64,7 +58,6 @@ const createUpgradePaymentIntent = async (req, res) => {
       return res.status(401).json({ message: "Invalid token format." });
     }
 
-    // Decode token using JWT_SECRET.
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
@@ -76,7 +69,6 @@ const createUpgradePaymentIntent = async (req, res) => {
       return res.status(400).json({ message: "Token missing userId or companyId." });
     }
 
-    // Retrieve the user's email.
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
@@ -86,7 +78,6 @@ const createUpgradePaymentIntent = async (req, res) => {
     }
     const email = user.email;
 
-    // Retrieve the company's name.
     const company = await prisma.company.findUnique({
       where: { id: companyId },
       select: { name: true },
@@ -96,15 +87,13 @@ const createUpgradePaymentIntent = async (req, res) => {
     }
     const companyName = company.name;
 
-    // Get planId and amount from request body.
     const { planId, amount } = req.body;
     if (!planId || !amount) {
       return res.status(400).json({ message: "Plan ID and amount are required." });
     }
-    // Convert dollars to cents.
+
     const amountCents = Math.round(Number(amount) * 100);
 
-    // Create the PaymentIntent on Stripe.
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
       currency: "usd",
@@ -122,10 +111,6 @@ const createUpgradePaymentIntent = async (req, res) => {
   }
 };
 
-/**
- * POST /api/payments/stripe-webhook
- * Processes Stripe webhook events.
- */
 const registerPayment = async (req, res) => {
   const signature = req.headers["stripe-signature"];
   let event;
@@ -154,11 +139,9 @@ const registerPayment = async (req, res) => {
     const paymentRecord = await prisma.payment.create({
       data: {
         stripeId: charge.id,
-        // For recording, prefer billing_details; if missing, fall back to metadata.
-        // In upgrade payments, our metadata now includes the companyName (not companyId)
         companyName: charge.billing_details?.name || charge.metadata?.companyName || "N/A",
         email: charge.billing_details?.email || charge.metadata?.email || "N/A",
-        amount: charge.amount / 100, // Stripe returns amount in cents.
+        amount: charge.amount / 100,
         paymentMethod: charge.payment_method_details?.type || null,
         paymentMethodType: charge.payment_method_details?.type || null,
         cardLast4: charge.payment_method_details?.card?.last4 || null,
