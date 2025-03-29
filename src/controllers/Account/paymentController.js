@@ -42,7 +42,7 @@ const createPaymentIntent = async (req, res) => {
       data: { clientSecret: paymentIntent.client_secret },
     });
   } catch (error) {
-    console.error("Error in createPaymentIntent:", error);
+    console.error("Error in createPaymentIntent: ", error);
     return res.status(500).json({ message: "Internal server error." });
   }
 };
