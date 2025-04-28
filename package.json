@@ -32,7 +32,7 @@
     "stripe": "^17.7.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7",
+    "nodemon": "^3.1.9",
     "prisma": "^6.5.0"
   },
   "_moduleAliases": {

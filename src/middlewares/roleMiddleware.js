@@ -14,7 +14,7 @@ function authorizeRoles(...allowedRoles) {
         console.log("User not found in database.");
         return res.status(403).json({ message: "Access denied: user not found." });
       }
-      if (!allowedRoles.includes(user.role)) {
+      if (!allowedRoles.includes((user.role || "").toLowerCase())) {
         console.log("User does not have permission. User role:", user.role, "Allowed roles:", allowedRoles);
         return res.status(403).json({ message: "Access denied: insufficient permissions." });
       }

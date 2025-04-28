@@ -12,6 +12,7 @@ const {
   coffeeBreakEnd,
   lunchBreakStart,
   lunchBreakEnd,
+  getCompanyTimeLogs,
 } = require("@controllers/Features/timeLogController");
 
 router.post("/time-in", authenticate, timeIn);
@@ -24,5 +25,7 @@ router.post("/coffee-break/start", authenticate, coffeeBreakStart);
 router.post("/coffee-break/end", authenticate, coffeeBreakEnd);
 router.post("/lunch-break/start", authenticate, lunchBreakStart);
 router.post("/lunch-break/end", authenticate, lunchBreakEnd);
+
+router.get("/", authenticate, getCompanyTimeLogs);
 
 module.exports = router;
