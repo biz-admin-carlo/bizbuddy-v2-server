@@ -398,6 +398,110 @@ const lunchBreakEnd = async (req, res) => {
   }
 };
 
+/**
+ * GET  /api/timelogs
+ * Admin/Super-admin – list every timelog in the company
+ * Query‐params:
+ *   employeeId   (string)
+ *   departmentId (string)
+ *   from, to     (YYYY-MM-DD)
+ *   status       ("active" | "completed")
+ */
+const getCompanyTimeLogs = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+
+    /* ---------- build Prisma filter ---------- */
+    const where = {
+      user: { companyId }, // same tenant
+    };
+
+    if (req.query.employeeId) {
+      where.userId = req.query.employeeId;
+    }
+
+    if (req.query.departmentId) {
+      where.user = { ...where.user, departmentId: req.query.departmentId };
+    }
+
+    if (req.query.status === "active") where.status = true;
+    if (req.query.status === "completed") where.status = false;
+
+    if (req.query.from || req.query.to) {
+      where.timeIn = {};
+      if (req.query.from) where.timeIn.gte = new Date(`${req.query.from}T00:00:00Z`);
+      if (req.query.to) where.timeIn.lte = new Date(`${req.query.to}T23:59:59Z`);
+    }
+
+    /* ---------- query DB ---------- */
+    const logs = await prisma.timeLog.findMany({
+      where,
+      orderBy: { timeIn: "desc" },
+      include: {
+        user: {
+          include: {
+            profile: true,
+            department: true,
+            presence: true, // ← last known presence
+          },
+        },
+      },
+    });
+
+    /* ---------- flatten / format ---------- */
+    const data = logs.map((l) => ({
+      id: l.id,
+      userId: l.user.id,
+      employeeName: `${l.user.profile?.firstName || ""} ${l.user.profile?.lastName || ""}`.trim(),
+      email: l.user.email,
+      department: l.user.department?.name || "—",
+      timeIn: l.timeIn,
+      timeOut: l.timeOut,
+      status: l.status ? "active" : "completed",
+      coffeeBreaks: l.coffeeBreaks || [],
+      lunchBreak: l.lunchBreak || null,
+      coffeeCount: (l.coffeeBreaks || []).length,
+      lunchTaken: !!(l.lunchBreak && l.lunchBreak.end),
+      presence: l.user.presence?.presenceStatus || "unknown",
+      shiftToday: null,
+    }));
+
+    /* ---------- attach today’s shift (optional) ---------- */
+    if (logs.length) {
+      const uniqueUserIds = [...new Set(logs.map((l) => l.userId).filter(Boolean))];
+
+      const today = new Date(); // current local date-time
+      const dayStart = new Date(today);
+      dayStart.setHours(0, 0, 0, 0); // 00:00:00.000
+      const dayEnd = new Date(dayStart);
+      dayEnd.setHours(23, 59, 59, 999); // 23:59:59.999
+
+      const shiftRows = await prisma.userShift.findMany({
+        where: {
+          userId: { in: uniqueUserIds },
+          assignedDate: { gte: dayStart, lte: dayEnd }, // proper Date objects
+        },
+        include: { shift: true },
+      });
+
+      const shiftMap = {};
+      shiftRows.forEach((s) => {
+        shiftMap[s.userId] = s.shift.shiftName;
+      });
+
+      data.forEach((d) => {
+        d.shiftToday = shiftMap[d.userId] || "—";
+      });
+    }
+
+    /* ---------- return ---------- */
+    return res.status(200).json({ data });
+  } catch (err) {
+    console.error("getCompanyTimeLogs error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 module.exports = {
   timeIn,
   timeOut,
@@ -407,4 +511,5 @@ module.exports = {
   coffeeBreakEnd,
   lunchBreakStart,
   lunchBreakEnd,
+  getCompanyTimeLogs,
 };
