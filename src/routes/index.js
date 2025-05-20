@@ -23,6 +23,9 @@ const userShiftRoutes = require("@routes/Features/userShiftRoutes");
 
 const employeeLocationRestrictionRoutes = require("@routes/Features/employeeLocationRestrictionRoutes");
 
+// analytics
+const analyticsRoutes = require("@routes/Features/analyticsRoutes");
+
 // subscriptions, subscriptionPlans, payments
 const paymentsRoutes = require("@routes/Account/paymentRoutes");
 const subscriptionPlansRoutes = require("@routes/Superadmin/subscriptionPlanRoutes");
@@ -48,5 +51,7 @@ router.use("/shiftschedules", shiftSchedulesRoutes);
 router.use("/usershifts", userShiftRoutes);
 
 router.use("/employee-location-restriction", employeeLocationRestrictionRoutes);
+
+router.use("/analytics", analyticsRoutes);
 
 module.exports = router;
