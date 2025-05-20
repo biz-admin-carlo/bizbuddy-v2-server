@@ -2,21 +2,12 @@
 
 const { prisma } = require("@config/connection");
 
-/**
- * Normalize a date by setting its time to midnight.
- */
 function normalizeDate(date) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-/**
- * Recalculate and update (or recreate) UserShift entries for a given schedule.
- * This function calculates a 30‑day window (or until the schedule's endDate, if provided),
- * deletes any existing UserShift entries in that window (for the schedule's shift),
- * and then creates new entries based on the updated recurrence pattern and assignment.
- */
 async function updateUserShiftsForSchedule(schedule) {
   try {
     const now = new Date();
