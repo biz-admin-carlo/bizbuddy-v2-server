@@ -1,44 +1,15 @@
-// File: prisma/seed.js
-//
-// This seed script inserts:
-// 1) SubscriptionPlan records (11 static plan entries, including "Free", "Basic", and "Pro")
-// 2) A Company record
-// 3) A User record
-// 4) A Subscription record
-// 5) A Payment record
-//
-// You can run this script manually via:
-//    node prisma/seed.js
-//
-// Ensure your .env has DATABASE_URL set to the correct Postgres DB
-// and that you have run `npx prisma migrate dev` to initialize the schema.
+// src/prisma/seed.js
 
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
-/**
- * Converts timestamps like "2025-02-26 20:55:01.675+08"
- * into something JS can parse, e.g. "2025-02-26T20:55:01.675+08:00"
- */
 function parseTimestamp(str) {
-  // For example: "2025-02-26 20:55:01.675+08"
-  // => "2025-02-26T20:55:01.675+08:00"
-  //
-  // 1) Replace the space with 'T' => "2025-02-26T20:55:01.675+08"
-  // 2) Insert ':00' into the final offset => "2025-02-26T20:55:01.675+08:00"
-  //
-  // If the offset is +08, we’ll convert that to +08:00
-  // You could adapt this logic for other offsets if needed.
   let replaced = str.replace(" ", "T");
-  // If the string ends with e.g. "+08", append ":00"
   replaced = replaced.replace(/\+(\d{2})(?!:)/, "+$1:00");
-
-  // Now parse as a Date
   return new Date(replaced);
 }
 
 async function main() {
-  // 1) Create SubscriptionPlan entries using createMany
   await prisma.subscriptionPlan.createMany({
     data: [
       {
@@ -190,11 +161,6 @@ async function main() {
 
   console.log("SubscriptionPlan data seeded successfully!");
 
-  //
-  // 2) Upsert (Company, User, Subscription, Payment)
-  //
-
-  // Upsert the Company
   await prisma.company.upsert({
     where: { id: "cm7lx48x70005vr3sk1bcnhcy" },
     update: {},
@@ -207,7 +173,6 @@ async function main() {
     },
   });
 
-  // Upsert the User
   await prisma.user.upsert({
     where: { id: "cm7lx48wq0003vr3syh4jesxh" },
     update: {},
@@ -217,14 +182,13 @@ async function main() {
       email: "saintsfranco2@gmail.com",
       password: "$2a$10$xtzm29rE.TSo6nT.gJVtVuejUTjJcO1yf24yr78RhHEocZWH9.KEu",
       companyId: "cm7lx48x70005vr3sk1bcnhcy",
-      role: "superadmin", // Must match your userRole enum
-      status: "active", // Must match your userStatus enum
+      role: "superadmin",
+      status: "active",
       createdAt: parseTimestamp("2025-02-26 20:55:01.656+08"),
       updatedAt: parseTimestamp("2025-02-26 20:55:01.656+08"),
     },
   });
 
-  // Upsert the Subscription
   await prisma.subscription.upsert({
     where: { id: "cm7lx48xe0007vr3svln2rxl4" },
     update: {},
@@ -232,7 +196,7 @@ async function main() {
       id: "cm7lx48xe0007vr3svln2rxl4",
       userId: "cm7lx48wq0003vr3syh4jesxh",
       companyId: "cm7lx48x70005vr3sk1bcnhcy",
-      planId: "cll9abc207", // Must match plan from above
+      planId: "cll9abc207",
       startDate: parseTimestamp("2025-02-26 20:55:01.682+08"),
       active: true,
       createdAt: parseTimestamp("2025-02-26 20:55:01.682+08"),
@@ -240,7 +204,6 @@ async function main() {
     },
   });
 
-  // Upsert the Payment
   await prisma.payment.upsert({
     where: { id: "cm7ixzxeb0008vrnsbsv789yh" },
     update: {},

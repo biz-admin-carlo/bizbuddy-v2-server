@@ -35,11 +35,6 @@ const getUserEmail = async (req, res) => {
   }
 };
 
-/**
- * GET /api/account/profile
- * Retrieves an organized profile for the currently signed‑in user.
- * Returns: { user, profile, company, subscription }
- */
 const getUserProfile = async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -60,7 +55,6 @@ const getUserProfile = async (req, res) => {
     if (!userId || !companyId) {
       return res.status(400).json({ message: "Token missing userId or companyId." });
     }
-    // Query user along with profile, company and active subscription.
     const user = await prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -79,7 +73,6 @@ const getUserProfile = async (req, res) => {
     }
     let latestSubscription = user.Subscription && user.Subscription.length > 0 ? user.Subscription[0] : null;
     if (!latestSubscription) {
-      // Fallback: Try to retrieve subscription via company.
       const companyWithSub = await prisma.company.findUnique({
         where: { id: companyId },
         include: {
@@ -93,7 +86,6 @@ const getUserProfile = async (req, res) => {
       });
       latestSubscription = companyWithSub && companyWithSub.Subscription && companyWithSub.Subscription.length > 0 ? companyWithSub.Subscription[0] : null;
     }
-    // Exclude sensitive fields
     const { password, Subscription, ...userData } = user;
     return res.status(200).json({
       message: "User profile retrieved successfully.",
@@ -110,10 +102,6 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-/**
- * GET /api/account/sign-in?email=...&password=...&companyId=...
- * Authenticates a user and returns a JWT.
- */
 const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
@@ -150,35 +138,22 @@ const signIn = async (req, res) => {
   }
 };
 
-/**
- * POST /api/account/sign-out
- * Dummy sign-out endpoint.
- */
 const signOut = (req, res) => {
   return res.status(200).json({ message: "Signed out successfully." });
 };
 
 const updateProfile = async (req, res) => {
   try {
-    // req.user is set by the auth middleware.
     const { id: userId, companyId } = req.user;
     let { username, email, firstName, lastName, phoneNumber } = req.body;
-
-    // Validate required fields.
     if (!username || !email) {
       return res.status(400).json({ message: "Username and email are required." });
     }
-
-    // Normalize username and email.
     const normalizedUsername = username.trim().toLowerCase();
     const normalizedEmail = email.trim().toLowerCase();
-
-    // Validate username format: only alphanumeric characters allowed.
     if (!/^[a-z0-9]+$/i.test(normalizedUsername)) {
       return res.status(400).json({ message: "Username must be alphanumeric." });
     }
-
-    // Check for duplicate username (case-insensitive), excluding the current user.
     const duplicateUsername = await prisma.user.findFirst({
       where: {
         username: { equals: normalizedUsername, mode: "insensitive" },
@@ -188,8 +163,6 @@ const updateProfile = async (req, res) => {
     if (duplicateUsername) {
       return res.status(400).json({ message: "Username is already taken." });
     }
-
-    // Check for duplicate email within the same company (email is stored in lowercase).
     const duplicateEmail = await prisma.user.findFirst({
       where: {
         companyId,
@@ -200,8 +173,6 @@ const updateProfile = async (req, res) => {
     if (duplicateEmail) {
       return res.status(400).json({ message: "Email already exists within the company." });
     }
-
-    // Update the User record with normalized values.
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
@@ -210,8 +181,6 @@ const updateProfile = async (req, res) => {
         updatedAt: new Date(),
       },
     });
-
-    // Update (or create if missing) the UserProfile record.
     const updatedProfile = await prisma.userProfile.upsert({
       where: { userId },
       update: {
@@ -231,7 +200,6 @@ const updateProfile = async (req, res) => {
         username: normalizedUsername,
       },
     });
-
     return res.status(200).json({
       message: "Profile updated successfully.",
       data: { user: updatedUser, profile: updatedProfile },
@@ -241,12 +209,6 @@ const updateProfile = async (req, res) => {
     return res.status(500).json({ message: "Internal server error." });
   }
 };
-
-/**
- * PUT /api/account/change-password
- * Changes the user's password.
- * Expected payload: { oldPassword, newPassword, confirmPassword }
- */
 const changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword, confirmPassword } = req.body;

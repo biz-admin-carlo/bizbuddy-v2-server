@@ -4,7 +4,6 @@ const { prisma } = require("@config/connection");
 
 const submitLeaveRequest = async (req, res) => {
   try {
-    // Destructure 'leaveReason' as well
     const { type, fromDate, toDate, approverId, leaveReason } = req.body;
 
     if (!type || !fromDate || !toDate || !approverId) {
@@ -65,7 +64,6 @@ const getUserLeaves = async (req, res) => {
       orderBy: { startDate: "desc" },
     });
 
-    // <-- ADDED for ISO fix
     const formattedLeaves = leaves.map((leave) => ({
       ...leave,
       startDate: leave.startDate.toISOString(),
@@ -110,7 +108,6 @@ const getPendingLeavesForApprover = async (req, res) => {
       orderBy: { createdAt: "desc" },
     });
 
-    // <-- ADDED for ISO fix
     const formattedLeaves = leaves.map((leave) => ({
       ...leave,
       startDate: leave.startDate.toISOString(),
@@ -135,7 +132,6 @@ const getPendingLeavesForApprover = async (req, res) => {
 const approveLeave = async (req, res) => {
   try {
     const leaveId = req.params.id;
-    // Pull approverComments from req.body (optional)
     const { approverComments } = req.body;
 
     const leave = await prisma.leave.findFirst({
@@ -145,12 +141,11 @@ const approveLeave = async (req, res) => {
       return res.status(404).json({ message: "Leave request not found or already processed." });
     }
 
-    // Update with optional approverComments
     const updatedLeave = await prisma.leave.update({
       where: { id: leaveId },
       data: {
         status: "approved",
-        approverComments, // <--- include comments if provided
+        approverComments,
       },
     });
 
@@ -172,7 +167,6 @@ const approveLeave = async (req, res) => {
 const rejectLeave = async (req, res) => {
   try {
     const leaveId = req.params.id;
-    // Pull approverComments from req.body (optional)
     const { approverComments } = req.body;
 
     const leave = await prisma.leave.findFirst({
@@ -182,12 +176,11 @@ const rejectLeave = async (req, res) => {
       return res.status(404).json({ message: "Leave request not found or already processed." });
     }
 
-    // Update with optional approverComments
     const updatedLeave = await prisma.leave.update({
       where: { id: leaveId },
       data: {
         status: "rejected",
-        approverComments, // <--- include comments if provided
+        approverComments,
       },
     });
 
@@ -236,7 +229,6 @@ const getApprovers = async (req, res) => {
 const deleteLeave = async (req, res) => {
   try {
     const leaveId = req.params.id;
-    // Verify that the leave exists and that it belongs to the current approver.
     const leave = await prisma.leave.findFirst({
       where: { id: leaveId, approverId: req.user.id },
     });
@@ -277,7 +269,6 @@ const getLeavesForApprover = async (req, res) => {
       orderBy: { startDate: "desc" },
     });
 
-    // <-- ADDED for ISO fix
     const formattedLeaves = leaves.map((leave) => ({
       ...leave,
       startDate: leave.startDate.toISOString(),

@@ -3,18 +3,16 @@
 const { prisma } = require("@config/connection");
 const { differenceInHours, parseISO, startOfDay, endOfDay, addDays } = require("date-fns");
 
-/* ---------- helpers ---------- */
 function shiftDurationHours(shift) {
   const s = shift.startTime;
   const e = shift.endTime;
   const diff = (e.getTime() - s.getTime()) / 36e5 + (shift.crossesMidnight ? 24 : 0);
-  return diff < 0 ? diff + 24 : diff; // safety net
+  return diff < 0 ? diff + 24 : diff;
 }
 
 function logDurationHours(log) {
   if (!log.timeOut) return 0;
   let hrs = (log.timeOut.getTime() - log.timeIn.getTime()) / 36e5;
-  /* subtract breaks */
   if (Array.isArray(log.coffeeBreaks)) {
     log.coffeeBreaks.forEach((b) => {
       if (b.start && b.end) hrs -= (new Date(b.end) - new Date(b.start)) / 36e5;
@@ -31,10 +29,6 @@ exports.getAdminAnalytics = async (req, res) => {
     const { companyId } = req.user;
     const from = req.query.from ? parseISO(req.query.from) : addDays(startOfDay(new Date()), -30);
     const to = req.query.to ? endOfDay(parseISO(req.query.to)) : endOfDay(new Date());
-
-    /* ───────────────────────────────────────────────────────────
-     *  DB pulls (keep them parallel for speed)
-     * ─────────────────────────────────────────────────────────── */
     const [timelogs, userShifts, leaves, paySettings] = await Promise.all([
       prisma.timeLog.findMany({
         where: {
@@ -60,21 +54,14 @@ exports.getAdminAnalytics = async (req, res) => {
       prisma.payrollSettings.findUnique({ where: { companyId } }),
     ]);
 
-    /* ───────────────────────────────────────────────────────────
-     *  1. Active staff timeline  (unique users who logged a punch)
-     * ─────────────────────────────────────────────────────────── */
     const activeTimeline = {};
     const activeUsersSet = new Set();
     timelogs.forEach((l) => {
-      const key = l.timeIn.toISOString().slice(0, 7); // YYYY-MM
+      const key = l.timeIn.toISOString().slice(0, 7);
       activeTimeline[key] = (activeTimeline[key] || new Set()).add(l.userId);
       activeUsersSet.add(l.userId);
     });
     const activeTimelineArr = Object.entries(activeTimeline).map(([month, set]) => ({ month, count: set.size }));
-
-    /* ───────────────────────────────────────────────────────────
-     *  2. Scheduled vs Actual
-     * ─────────────────────────────────────────────────────────── */
     let totalScheduled = 0;
     userShifts.forEach((us) => {
       totalScheduled += shiftDurationHours(us.shift);
@@ -85,9 +72,6 @@ exports.getAdminAnalytics = async (req, res) => {
       totalActual += logDurationHours(l);
     });
 
-    /* ───────────────────────────────────────────────────────────
-     *  3. Late clock-in / early clock-out
-     * ─────────────────────────────────────────────────────────── */
     let lateCnt = 0,
       earlyCnt = 0;
     userShifts.forEach((us) => {
@@ -114,15 +98,9 @@ exports.getAdminAnalytics = async (req, res) => {
     const latePct = totalShifts ? ((lateCnt / totalShifts) * 100).toFixed(1) : 0;
     const earlyPct = totalShifts ? ((earlyCnt / totalShifts) * 100).toFixed(1) : 0;
 
-    /* ───────────────────────────────────────────────────────────
-     *  4. Attendance reliability
-     * ─────────────────────────────────────────────────────────── */
     let onTimeShifts = totalShifts - lateCnt - earlyCnt;
     const attendanceReliability = totalShifts ? ((onTimeShifts / totalShifts) * 100).toFixed(1) : 0;
 
-    /* ───────────────────────────────────────────────────────────
-     *  5. Leave usage & approvals
-     * ─────────────────────────────────────────────────────────── */
     const leaveUsage = {};
     let approved = 0,
       pending = 0,
@@ -136,10 +114,7 @@ exports.getAdminAnalytics = async (req, res) => {
       else if (lv.status === "rejected") rejected++;
     });
 
-    /* ───────────────────────────────────────────────────────────
-     *  6. Overtime
-     * ─────────────────────────────────────────────────────────── */
-    const shiftHoursMap = {}; // userId+date -> schedHrs
+    const shiftHoursMap = {};
     userShifts.forEach((us) => {
       const key = us.userId + "-" + us.assignedDate.toISOString().slice(0, 10);
       shiftHoursMap[key] = (shiftHoursMap[key] || 0) + shiftDurationHours(us.shift);
@@ -160,14 +135,9 @@ exports.getAdminAnalytics = async (req, res) => {
       }
     });
 
-    /* cost impact */
     const otRate = paySettings ? paySettings.overtimeRate : 1.5;
     const overtimeCost = Number((totalOvertime * otRate).toFixed(2));
 
-    /* ───────────────────────────────────────────────────────────
-     *  7. Shift coverage (simply: % of userShift rows that have
-     *     at least ONE timelog for that user / date)
-     * ─────────────────────────────────────────────────────────── */
     let covered = 0;
     userShifts.forEach((us) => {
       const hasPunch = timelogs.some(
@@ -177,9 +147,6 @@ exports.getAdminAnalytics = async (req, res) => {
     });
     const coverageRate = totalShifts ? ((covered / totalShifts) * 100).toFixed(1) : 0;
 
-    /* ───────────────────────────────────────────────────────────
-     *  Response
-     * ─────────────────────────────────────────────────────────── */
     return res.status(200).json({
       message: "Analytics ready",
       data: {

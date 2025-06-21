@@ -1,4 +1,5 @@
 // src/controllers/Account/subscriptionController.js
+
 const { prisma } = require("@config/connection");
 const { JWT_SECRET } = require("@config/env");
 const jwt = require("jsonwebtoken");

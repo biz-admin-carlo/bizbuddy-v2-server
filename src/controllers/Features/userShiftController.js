@@ -5,15 +5,13 @@ const { prisma } = require("@config/connection");
 const getUserShifts = async (req, res) => {
   try {
     const userId = req.user.id;
-    // Query the UserShift table for shifts assigned to the user
     const userShifts = await prisma.userShift.findMany({
       where: { userId },
       include: {
-        shift: true, // include shift template details (shiftName, startTime, etc.)
+        shift: true,
       },
       orderBy: { assignedDate: "desc" },
     });
-    // Format date fields to ISO strings (optional)
     const formattedShifts = userShifts.map((shift) => ({
       ...shift,
       assignedDate: shift.assignedDate.toISOString(),

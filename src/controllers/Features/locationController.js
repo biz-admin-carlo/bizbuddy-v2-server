@@ -2,10 +2,6 @@
 
 const { prisma } = require("@config/connection");
 
-/**
- * POST /api/location/create
- * Creates a new location for the current company.
- */
 exports.createLocation = async (req, res) => {
   try {
     const { name, latitude, longitude, radius } = req.body;
@@ -44,10 +40,6 @@ exports.createLocation = async (req, res) => {
   }
 };
 
-/**
- * GET /api/location
- * Retrieves all locations for the current company.
- */
 exports.getAllLocations = async (req, res) => {
   try {
     const companyId = req.user.companyId;
@@ -75,10 +67,6 @@ exports.getAllLocations = async (req, res) => {
   }
 };
 
-/**
- * GET /api/location/assigned
- * Returns all locations that the current user is assigned to via LocationRestriction.
- */
 exports.getAssignedLocationsForUser = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -86,18 +74,16 @@ exports.getAssignedLocationsForUser = async (req, res) => {
       return res.status(401).json({ error: "User not found in request." });
     }
 
-    // Find all location restrictions for this user that are active => restrictionStatus: true
     const restrictions = await prisma.locationRestriction.findMany({
       where: {
         userId,
         restrictionStatus: true,
       },
       include: {
-        location: true, // get the location data
+        location: true,
       },
     });
 
-    // Build an array of assigned locations
     const assignedLocations = restrictions.map((r) => {
       const loc = r.location;
       return {
@@ -119,10 +105,6 @@ exports.getAssignedLocationsForUser = async (req, res) => {
   }
 };
 
-/**
- * GET /api/location/:id
- * Retrieves a location by its ID (within the current company).
- */
 exports.getLocationById = async (req, res) => {
   try {
     const locationId = req.params.id;
@@ -152,17 +134,12 @@ exports.getLocationById = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/location/update/:id
- * Updates an existing location's name, coordinates, or radius.
- */
 exports.updateLocation = async (req, res) => {
   try {
     const locationId = req.params.id;
     const companyId = req.user.companyId;
     let { name, latitude, longitude, radius } = req.body;
 
-    // Check if location belongs to user's company
     const location = await prisma.location.findFirst({
       where: { id: locationId, companyId },
     });
@@ -170,7 +147,6 @@ exports.updateLocation = async (req, res) => {
       return res.status(404).json({ error: "Location not found." });
     }
 
-    // Name must not be empty
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "Location name is required." });
     }
@@ -201,10 +177,6 @@ exports.updateLocation = async (req, res) => {
   }
 };
 
-/**
- * DELETE /api/location/delete/:id
- * Deletes a location (and its restrictions).
- */
 exports.deleteLocation = async (req, res) => {
   try {
     const locationId = req.params.id;
@@ -214,7 +186,6 @@ exports.deleteLocation = async (req, res) => {
       return res.status(400).json({ error: "Invalid location ID." });
     }
 
-    // Check if the location belongs to the user's company
     const location = await prisma.location.findFirst({
       where: { id: locationId, companyId },
     });
@@ -222,12 +193,10 @@ exports.deleteLocation = async (req, res) => {
       return res.status(404).json({ error: "Location not found." });
     }
 
-    // Delete locationRestrictions first
     await prisma.locationRestriction.deleteMany({
       where: { locationId },
     });
 
-    // Then delete the location
     await prisma.location.delete({ where: { id: locationId } });
 
     return res.status(200).json({ message: "Location and its restrictions deleted successfully." });
@@ -237,10 +206,6 @@ exports.deleteLocation = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/location/:id/assign-users
- * Upserts a list of users for a location.
- */
 exports.assignUsersToLocation = async (req, res) => {
   try {
     const locationId = req.params.id;
@@ -254,7 +219,6 @@ exports.assignUsersToLocation = async (req, res) => {
       return res.status(400).json({ error: "A non-empty array of user IDs is required." });
     }
 
-    // Check the location
     const location = await prisma.location.findFirst({
       where: { id: locationId, companyId },
     });
@@ -262,7 +226,6 @@ exports.assignUsersToLocation = async (req, res) => {
       return res.status(404).json({ error: "Location not found." });
     }
 
-    // Validate user IDs
     const validUsers = await prisma.user.findMany({
       where: {
         id: { in: userIds },
@@ -279,7 +242,6 @@ exports.assignUsersToLocation = async (req, res) => {
       });
     }
 
-    // Upsert restrictions
     for (const userId of validUserIds) {
       await prisma.locationRestriction.upsert({
         where: {
@@ -307,10 +269,6 @@ exports.assignUsersToLocation = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/location/:id/remove-users
- * Removes a list of users from a location.
- */
 exports.removeUsersFromLocation = async (req, res) => {
   try {
     const locationId = req.params.id;
@@ -324,7 +282,6 @@ exports.removeUsersFromLocation = async (req, res) => {
       return res.status(400).json({ error: "A non-empty array of user IDs is required." });
     }
 
-    // Check location
     const location = await prisma.location.findFirst({
       where: { id: locationId, companyId },
     });
@@ -332,7 +289,6 @@ exports.removeUsersFromLocation = async (req, res) => {
       return res.status(404).json({ error: "Location not found." });
     }
 
-    // Delete the restrictions
     await prisma.locationRestriction.deleteMany({
       where: {
         userId: { in: userIds },
@@ -350,10 +306,6 @@ exports.removeUsersFromLocation = async (req, res) => {
   }
 };
 
-/**
- * GET /api/location/:id/users
- * Retrieves all users assigned to a location.
- */
 exports.getUsersForLocation = async (req, res) => {
   try {
     const locationId = req.params.id;

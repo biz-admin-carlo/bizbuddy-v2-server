@@ -1,24 +1,15 @@
 // src/controllers/Account/companyController.js
 const { prisma } = require("@config/connection");
 
-/* ------------------------------------------------------------------ */
-/*  “CURRENT” subscription selector: returns at most one record        */
-/* ------------------------------------------------------------------ */
 const currentSubSelect = {
   take: 1,
   orderBy: { startDate: "desc" },
   where: {
-    OR: [
-      { active: true },
-      { endDate: { gt: new Date() } }, // still valid in the future
-    ],
+    OR: [{ active: true }, { endDate: { gt: new Date() } }],
   },
   select: { startDate: true, endDate: true },
 };
 
-/* ------------------------------------------------------------------ */
-/*  COMMON FIELD SELECTION                                             */
-/* ------------------------------------------------------------------ */
 const baseSelect = {
   id: true,
   name: true,
@@ -30,7 +21,6 @@ const baseSelect = {
   Subscription: currentSubSelect,
 };
 
-/* ------------------------------------------------------------------ */
 const getAllCompanies = async (_req, res) => {
   try {
     const companies = await prisma.company.findMany({
@@ -50,7 +40,6 @@ const getCompanyById = async (req, res) => {
       where: { id: req.params.id },
       select: {
         ...baseSelect,
-        /* full history for the details modal -------------------- */
         Subscription: { orderBy: { startDate: "desc" }, include: { plan: true } },
       },
     });
@@ -61,9 +50,7 @@ const getCompanyById = async (req, res) => {
     return res.status(500).json({ message: "Internal server error." });
   }
 };
-/* ------------------------------------------------------------------ */
-/*  CREATE                                                             */
-/* ------------------------------------------------------------------ */
+
 const createCompany = async (req, res) => {
   try {
     const { name, country, currency, language } = req.body;
@@ -83,9 +70,6 @@ const createCompany = async (req, res) => {
   }
 };
 
-/* ------------------------------------------------------------------ */
-/*  UPDATE                                                             */
-/* ------------------------------------------------------------------ */
 const updateCompany = async (req, res) => {
   try {
     const companyId = req.params.id;
@@ -111,9 +95,6 @@ const updateCompany = async (req, res) => {
   }
 };
 
-/* ------------------------------------------------------------------ */
-/*  DELETE                                                             */
-/* ------------------------------------------------------------------ */
 const deleteCompany = async (req, res) => {
   try {
     const companyId = req.params.id;
@@ -125,9 +106,6 @@ const deleteCompany = async (req, res) => {
   }
 };
 
-/* ------------------------------------------------------------------ */
-/*  USER COUNT (optional helper)                                       */
-/* ------------------------------------------------------------------ */
 const getCompanyUserCount = async (req, res) => {
   try {
     const companyId = req.params.id;
