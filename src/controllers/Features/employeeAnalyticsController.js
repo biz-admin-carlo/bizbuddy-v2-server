@@ -1,4 +1,5 @@
-/* src/controllers/Features/employeeAnalyticsController.js */
+// src/controllers/Features/employeeAnalyticsController.js
+
 const { prisma } = require("@config/connection");
 
 const toDate = (v) => (v instanceof Date ? v : new Date(v));

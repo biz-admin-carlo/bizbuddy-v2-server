@@ -1,11 +1,11 @@
 // src/controllers/Features/userPresenceController.js
+
 const { prisma } = require("@config/connection");
 
 const getUserPresence = async (req, res) => {
   try {
     const userId = req.user.id;
     let presence = await prisma.userPresence.findUnique({ where: { userId } });
-
     if (!presence) {
       presence = await prisma.userPresence.create({
         data: {
@@ -15,7 +15,6 @@ const getUserPresence = async (req, res) => {
         },
       });
     }
-
     return res.status(200).json({ data: presence });
   } catch (error) {
     console.error("Error retrieving presence:", error);
@@ -31,7 +30,6 @@ const updateUserPresence = async (req, res) => {
     if (!allowedStatuses.includes(presenceStatus)) {
       return res.status(400).json({ message: "Invalid presence status" });
     }
-
     const updatedPresence = await prisma.userPresence.upsert({
       where: { userId },
       update: {

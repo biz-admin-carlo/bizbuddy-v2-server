@@ -32,6 +32,12 @@ enum PresenceStatus {
   offline
 }
 
+enum overtimeStatus {
+  pending
+  approved
+  rejected
+}
+
 model User {
   id           String     @id @default(cuid())
   username     String     @unique
@@ -41,6 +47,8 @@ model User {
   departmentId String?
   role         userRole   @default(admin)
   status       userStatus @default(active)
+  hireDate     DateTime?  @db.Timestamptz
+  employeeId   String?
   createdAt    DateTime   @default(now()) @db.Timestamptz
   updatedAt    DateTime   @updatedAt @db.Timestamptz
 
@@ -60,6 +68,8 @@ model User {
   Leave                 Leave[]
   ApprovedLeaves        Leave[]               @relation("approver")
   Subscription          Subscription[]
+  requestedOT           Overtime[]            @relation("OTRequester")
+  approvedOT            Overtime[]            @relation("OTApprover")
 
   @@unique([companyId, email])
 }
@@ -87,22 +97,24 @@ model UserPresence {
 }
 
 model Company {
-  id            String          @id @default(cuid())
-  name          String          @unique
-  userId        String          @unique
-  createdAt     DateTime        @default(now()) @db.Timestamptz
-  updatedAt     DateTime        @default(now()) @db.Timestamptz
-  country       String?
-  currency      String?
-  language      String?
-  Department    Department[]
-  User          User[]
-  Tax           Tax[]
-  Location      Location[]
-  Shift         Shift[]
-  Subscription  Subscription[]
-  ShiftSchedule ShiftSchedule[]
-  Holiday       Holiday[]
+  id                  String          @id @default(cuid())
+  name                String          @unique
+  userId              String          @unique
+  createdAt           DateTime        @default(now()) @db.Timestamptz
+  updatedAt           DateTime        @default(now()) @db.Timestamptz
+  country             String?
+  currency            String?
+  language            String?
+  defaultShiftHours   Decimal?        @default(8.00) @db.Decimal(5, 2)
+  minimumLunchMinutes Int?            @default(60)
+  Department          Department[]
+  User                User[]
+  Tax                 Tax[]
+  Location            Location[]
+  Shift               Shift[]
+  Subscription        Subscription[]
+  ShiftSchedule       ShiftSchedule[]
+  Holiday             Holiday[]
 }
 
 model Department {
@@ -270,18 +282,20 @@ model ShiftRecurrence {
 }
 
 model TimeLog {
-  id           String    @id @default(cuid())
+  id           String     @id @default(cuid())
   userId       String
-  timeIn       DateTime  @db.Timestamptz
-  timeOut      DateTime? @db.Timestamptz
+  timeIn       DateTime   @db.Timestamptz
+  timeOut      DateTime?  @db.Timestamptz
   coffeeBreaks Json?
   lunchBreak   Json?
+  lateHours    Decimal?   @db.Decimal(5, 2)
   deviceInfo   Json?
   location     Json?
-  status       Boolean   @default(true)
-  createdAt    DateTime  @default(now()) @db.Timestamptz
-  updatedAt    DateTime  @default(now()) @db.Timestamptz
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status       Boolean    @default(true)
+  createdAt    DateTime   @default(now()) @db.Timestamptz
+  updatedAt    DateTime   @default(now()) @db.Timestamptz
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  overtime     Overtime[]
 }
 
 model Holiday {
@@ -310,6 +324,29 @@ model Leave {
   updatedAt        DateTime @default(now()) @db.Timestamptz
   User             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   approver         User?    @relation("approver", fields: [approverId], references: [id], onDelete: SetNull)
+}
+
+model Overtime {
+  id               String         @id @default(cuid())
+  timeLogId        String
+  requesterId      String
+  approverId       String?
+  requestedHours   Decimal?       @db.Decimal(5, 2)
+  lateHours        Decimal?       @db.Decimal(5, 2)
+  requesterReason  String?
+  approverComments String?
+  status           overtimeStatus @default(pending)
+  createdAt        DateTime       @default(now()) @db.Timestamptz
+  updatedAt        DateTime       @updatedAt @db.Timestamptz
+
+  /**
+   * relations
+   */
+  timeLog   TimeLog @relation(fields: [timeLogId], references: [id], onDelete: Cascade)
+  requester User    @relation("OTRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  approver  User?   @relation("OTApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  @@index([timeLogId])
 }
 
 model SubscriptionPlan {

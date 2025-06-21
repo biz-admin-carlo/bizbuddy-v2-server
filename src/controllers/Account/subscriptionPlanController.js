@@ -42,10 +42,6 @@ const createPlan = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/subscription-plans/:id
- * Updates an existing subscription plan.
- */
 const updatePlan = async (req, res) => {
   try {
     const planId = req.params.id;
@@ -85,10 +81,6 @@ const updatePlan = async (req, res) => {
   }
 };
 
-/**
- * DELETE /api/subscription-plans/:id
- * Deletes a subscription plan.
- */
 const deletePlan = async (req, res) => {
   try {
     const planId = req.params.id;

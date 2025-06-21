@@ -20,10 +20,6 @@ const getAllSubscriptionPlans = async (req, res) => {
   }
 };
 
-/**
- * GET /api/account/check-company-name?name=...
- * Checks if a company name is available.
- */
 const checkCompanyName = async (req, res) => {
   try {
     const { name } = req.query;
@@ -43,10 +39,6 @@ const checkCompanyName = async (req, res) => {
   }
 };
 
-/**
- * GET /api/account/check-username?username=...
- * Checks if a username is available.
- */
 const checkUsername = async (req, res) => {
   try {
     const { username } = req.query;
@@ -66,13 +58,6 @@ const checkUsername = async (req, res) => {
   }
 };
 
-/**
- * POST /api/account/sign-up
- * Creates a new user account, user profile, company, and subscription in a transaction.
- *
- * This function now creates a subscription record with startDate set to the current date
- * and endDate exactly 30 days later.
- */
 const signUp = async (req, res) => {
   try {
     const { firstName, lastName, email, password, companyName, country, currency, language, subscriptionPlanId, isPaid, username } = req.body;
@@ -81,7 +66,6 @@ const signUp = async (req, res) => {
       return res.status(400).json({ message: "Missing required fields." });
     }
 
-    // Optionally check username uniqueness globally.
     if (username) {
       const existingUsername = await prisma.user.findUnique({
         where: { username: username.trim().toLowerCase() },
@@ -94,10 +78,7 @@ const signUp = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedUsername = username ? username.trim().toLowerCase() : normalizedEmail;
-
-    // Use a transaction for atomicity.
     const result = await prisma.$transaction(async (tx) => {
-      // Create the User.
       const newUser = await tx.user.create({
         data: {
           username: normalizedUsername,
@@ -107,7 +88,6 @@ const signUp = async (req, res) => {
         },
       });
 
-      // Create the UserProfile.
       await tx.userProfile.create({
         data: {
           userId: newUser.id,
@@ -118,7 +98,6 @@ const signUp = async (req, res) => {
         },
       });
 
-      // Create the Company.
       const newCompany = await tx.company.create({
         data: {
           name: companyName,
@@ -129,17 +108,13 @@ const signUp = async (req, res) => {
         },
       });
 
-      // Link the user to the company.
       await tx.user.update({
         where: { id: newUser.id },
         data: { companyId: newCompany.id },
       });
 
-      // Generate a JWT.
       if (!JWT_SECRET) throw new Error("JWT secret is not configured.");
       const token = jwt.sign({ userId: newUser.id, role: newUser.role, companyId: newCompany.id }, JWT_SECRET, { expiresIn: "10y" });
-
-      // Retrieve the subscription plan.
       const subscriptionPlan = await tx.subscriptionPlan.findUnique({
         where: { id: subscriptionPlanId },
       });
@@ -147,12 +122,8 @@ const signUp = async (req, res) => {
         throw new Error("Invalid subscription plan.");
       }
       const isSubscriptionActive = !!isPaid;
-
-      // Set the subscription dates: startDate now and endDate 30 days later.
       const startDate = new Date();
       const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-      // Create the Subscription.
       const newSubscription = await tx.subscription.create({
         data: {
           userId: newUser.id,

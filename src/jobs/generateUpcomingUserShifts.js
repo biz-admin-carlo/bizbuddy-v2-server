@@ -3,7 +3,6 @@
 const cron = require("node-cron");
 const { prisma } = require("@config/connection");
 
-// Normalize a date by setting its time to midnight
 function normalizeDate(date) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
@@ -28,47 +27,32 @@ async function generateUpcomingUserShifts() {
     });
 
     for (const schedule of schedules) {
-      // Normalize startDate and endDate
       const scheduleStart = normalizeDate(schedule.startDate);
       let scheduleEnd = schedule.endDate ? normalizeDate(schedule.endDate) : null;
-
-      // If an endDate is provided but it's not after the startDate, treat it as no end date.
       if (scheduleEnd && scheduleEnd <= scheduleStart) {
         scheduleEnd = null;
       }
-
-      // If schedule has an endDate and it's before today, skip processing it.
       if (scheduleEnd && scheduleEnd < normalizedNow) {
         console.warn(`Skipping schedule ${schedule.id} because its endDate is in the past.`);
         continue;
       }
-
-      // Calculate the effective window for generating occurrences.
-      // Use the later of scheduleStart or today.
       const windowEffectiveStart = scheduleStart > normalizedNow ? scheduleStart : normalizedNow;
       let effectiveWindowEnd = windowEnd;
       if (scheduleEnd) {
-        // Use the earlier of scheduleEnd or windowEnd.
         effectiveWindowEnd = scheduleEnd < windowEnd ? scheduleEnd : windowEnd;
       }
 
-      // If the effective window is invalid, skip the schedule.
       if (windowEffectiveStart > effectiveWindowEnd) {
         console.warn(`Skipping schedule ${schedule.id} because effective window is invalid.`);
         continue;
       }
-
-      // Parse the recurrence pattern (expects something like "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR")
       const byDayPart = schedule.recurrencePattern.split(";").find((part) => part.startsWith("BYDAY="));
       let daysArray = [];
       if (byDayPart) {
         daysArray = byDayPart.replace("BYDAY=", "").split(",");
       }
-      // Map day abbreviations to JavaScript day numbers (0 = Sunday, 6 = Saturday)
       const dayMap = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
       const validDays = daysArray.map((day) => dayMap[day]).filter((d) => d !== undefined);
-
-      // Generate occurrence dates within the effective window
       const occurrenceDates = [];
       let currentDate = new Date(windowEffectiveStart);
       while (currentDate <= effectiveWindowEnd) {
@@ -78,7 +62,6 @@ async function generateUpcomingUserShifts() {
         currentDate.setDate(currentDate.getDate() + 1);
       }
 
-      // Determine which users to assign based on schedule settings.
       let users = [];
       if (schedule.assignedToAll) {
         users = await prisma.user.findMany({
@@ -89,7 +72,6 @@ async function generateUpcomingUserShifts() {
         if (user) users.push(user);
       }
 
-      // Prepare user shift assignment records, skipping duplicates.
       const userShiftData = [];
       for (const date of occurrenceDates) {
         for (const user of users) {
@@ -122,7 +104,6 @@ async function generateUpcomingUserShifts() {
   }
 }
 
-// Run this job every day at midnight
 cron.schedule("0 0 * * *", () => {
   generateUpcomingUserShifts();
 });

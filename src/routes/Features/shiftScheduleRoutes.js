@@ -7,7 +7,7 @@ const authenticate = require("@middlewares/authMiddleware");
 const { createShiftSchedule, getShiftSchedules, updateShiftSchedule, deleteShiftSchedule } = require("@controllers/Features/shiftScheduleController");
 
 router.post("/create", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), createShiftSchedule);
-router.get("/", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), getShiftSchedules);
+router.get("/", authenticate, authorizeRoles("admin", "supervisor", "superadmin", "employee"), getShiftSchedules);
 router.put("/:id", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), updateShiftSchedule);
 router.delete("/:id", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), deleteShiftSchedule);
 

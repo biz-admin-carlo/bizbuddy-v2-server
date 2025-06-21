@@ -9,7 +9,7 @@ const app = express();
 app.use(
   cors({
     origin: ["http://localhost:19006", "https://mybizbuddy.co", "http://localhost:3000"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
