@@ -5,8 +5,10 @@
   "type": "commonjs",
   "scripts": {
     "dev": "nodemon server.js",
-    "start": "node server.js",
-    "seed": "node src/prisma/seed.js"
+    "start": "npm run prisma:sync && node server.js",
+    "seed": "node src/prisma/seed.js",
+    "prisma:sync": "prisma db push --accept-data-loss && prisma generate",
+    "postinstall": "prisma generate"
   },
   "prisma": {
     "schema": "src/prisma/schema.prisma",
