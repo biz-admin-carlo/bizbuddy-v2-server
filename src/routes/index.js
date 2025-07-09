@@ -22,6 +22,7 @@ const subscriptionPlansRoutes = require("@routes/Superadmin/subscriptionPlanRout
 const subscriptionsRoutes = require("@routes/Superadmin/subscriptionRoutes");
 const overtimeRoutes = require("@routes/Features/overtimeRoutes");
 const companySettingsRoutes = require("@routes/Account/companySettingsRoutes");
+const employmentDetailRoutes = require("@routes/Features/employmentDetailRoutes");
 
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
@@ -42,5 +43,6 @@ router.use("/employee-location-restriction", employeeLocationRestrictionRoutes);
 router.use("/analytics", analyticsRoutes);
 router.use("/overtime", overtimeRoutes);
 router.use("/company-settings", companySettingsRoutes);
+router.use("/employment-details", employmentDetailRoutes);
 
 module.exports = router;

@@ -60,6 +60,12 @@ const getUserProfile = async (req, res) => {
       include: {
         profile: true,
         company: true,
+        employmentDetail: {
+          include: {
+            department: true,
+            supervisor: { select: { id: true, email: true } },
+          },
+        },
         Subscription: {
           where: { active: true },
           orderBy: { createdAt: "desc" },

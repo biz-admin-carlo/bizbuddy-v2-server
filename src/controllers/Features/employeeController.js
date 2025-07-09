@@ -37,6 +37,20 @@ const getAllEmployees = async (req, res) => {
         company: {
           select: { id: true, name: true },
         },
+        employmentDetail: {
+          select: {
+            jobTitle: true,
+            employmentStatus: true,
+            exemptStatus: true,
+            employmentType: true,
+            workLocation: true,
+            probationEndDate: true,
+            timeZone: true,
+            supervisor: {
+              select: { id: true, email: true },
+            },
+          },
+        },
       },
       orderBy: { id: "asc" },
     });
@@ -365,6 +379,18 @@ const getEmployeeById = async (req, res) => {
         },
         company: {
           select: { id: true, name: true },
+        },
+        employmentDetail: {
+          select: {
+            jobTitle: true,
+            employmentStatus: true,
+            exemptStatus: true,
+            employmentType: true,
+            workLocation: true,
+            probationEndDate: true,
+            timeZone: true,
+            supervisor: { select: { id: true, email: true } },
+          },
         },
       },
     });
