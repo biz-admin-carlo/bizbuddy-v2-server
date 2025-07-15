@@ -4,12 +4,21 @@ const { prisma } = require("@config/connection");
 const { getIO } = require("@config/socket");
 
 function calculateDistanceKm(lat1, lon1, lat2, lon2) {
-  const R = 6371; // km
+  const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+}
+
+async function recalcLateHours(userId, newTimeIn) {
+  if (!newTimeIn) return null;
+  return await calculateLateHoursForUser(userId, new Date(newTimeIn));
 }
 
 async function verifyLocationRestriction(userId, userLat, userLng) {
@@ -18,23 +27,32 @@ async function verifyLocationRestriction(userId, userLat, userLng) {
     include: { location: true },
   });
 
-  if (!restrictions.length) return { allowed: true }; // unrestricted
+  if (!restrictions.length) return { allowed: true };
 
   if (userLat == null || userLng == null) {
     return {
       allowed: false,
-      reason: "Location services disabled or location data missing. You must enable location to Time In/Out.",
+      reason:
+        "Location services disabled or location data missing. You must enable location to Time In/Out.",
     };
   }
 
   for (const r of restrictions) {
     const loc = r.location;
     if (!loc) continue;
-    const distKm = calculateDistanceKm(Number(loc.latitude), Number(loc.longitude), Number(userLat), Number(userLng));
+    const distKm = calculateDistanceKm(
+      Number(loc.latitude),
+      Number(loc.longitude),
+      Number(userLat),
+      Number(userLng)
+    );
     if (distKm * 1000 <= loc.radius) return { allowed: true };
   }
 
-  return { allowed: false, reason: "You are not within any assigned location radius." };
+  return {
+    allowed: false,
+    reason: "You are not within any assigned location radius.",
+  };
 }
 
 async function calculateLateHoursForUser(userId, punchInDate) {
@@ -67,11 +85,17 @@ const timeIn = async (req, res) => {
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
-    if (activeLog) return res.status(400).json({ message: "User already timed in." });
+    if (activeLog)
+      return res.status(400).json({ message: "User already timed in." });
     const { localTimestamp, deviceInfo, location } = req.body;
     const actualTimeIn = localTimestamp ? new Date(localTimestamp) : new Date();
-    const locCheck = await verifyLocationRestriction(userId, location?.latitude, location?.longitude);
-    if (!locCheck.allowed) return res.status(400).json({ message: locCheck.reason });
+    const locCheck = await verifyLocationRestriction(
+      userId,
+      location?.latitude,
+      location?.longitude
+    );
+    if (!locCheck.allowed)
+      return res.status(400).json({ message: locCheck.reason });
     const lateHours = await calculateLateHoursForUser(userId, actualTimeIn);
     const newTimeLog = await prisma.timeLog.create({
       data: {
@@ -85,8 +109,12 @@ const timeIn = async (req, res) => {
       },
     });
 
-    getIO().to(userId).emit("timeLogUpdated", { type: "timeIn", data: newTimeLog });
-    return res.status(201).json({ message: "Time in recorded successfully.", data: newTimeLog });
+    getIO()
+      .to(userId)
+      .emit("timeLogUpdated", { type: "timeIn", data: newTimeLog });
+    return res
+      .status(201)
+      .json({ message: "Time in recorded successfully.", data: newTimeLog });
   } catch (err) {
     console.error("Error in timeIn:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -100,11 +128,19 @@ const timeOut = async (req, res) => {
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
-    if (!activeLog) return res.status(400).json({ message: "No active time log found." });
+    if (!activeLog)
+      return res.status(400).json({ message: "No active time log found." });
     const { localTimestamp, deviceInfo, location } = req.body;
-    const actualTimeOut = localTimestamp ? new Date(localTimestamp) : new Date();
-    const locCheck = await verifyLocationRestriction(userId, location?.latitude, location?.longitude);
-    if (!locCheck.allowed) return res.status(400).json({ message: locCheck.reason });
+    const actualTimeOut = localTimestamp
+      ? new Date(localTimestamp)
+      : new Date();
+    const locCheck = await verifyLocationRestriction(
+      userId,
+      location?.latitude,
+      location?.longitude
+    );
+    if (!locCheck.allowed)
+      return res.status(400).json({ message: locCheck.reason });
     const updatedTimeLog = await prisma.timeLog.update({
       where: { id: activeLog.id },
       data: {
@@ -121,8 +157,13 @@ const timeOut = async (req, res) => {
       },
     });
 
-    getIO().to(userId).emit("timeLogUpdated", { type: "timeOut", data: updatedTimeLog });
-    return res.status(200).json({ message: "Time out recorded successfully.", data: updatedTimeLog });
+    getIO()
+      .to(userId)
+      .emit("timeLogUpdated", { type: "timeOut", data: updatedTimeLog });
+    return res.status(200).json({
+      message: "Time out recorded successfully.",
+      data: updatedTimeLog,
+    });
   } catch (err) {
     console.error("Error in timeOut:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -157,9 +198,12 @@ const deleteTimeLog = async (req, res) => {
     const { id } = req.params;
     const log = await prisma.timeLog.findUnique({ where: { id } });
     if (!log) return res.status(404).json({ message: "Time log not found." });
-    if (log.userId !== req.user.id) return res.status(403).json({ message: "Not your time log." });
+    if (log.userId !== req.user.id)
+      return res.status(403).json({ message: "Not your time log." });
     await prisma.timeLog.delete({ where: { id } });
-    getIO().to(req.user.id).emit("timeLogUpdated", { type: "delete", data: { id } });
+    getIO()
+      .to(req.user.id)
+      .emit("timeLogUpdated", { type: "delete", data: { id } });
     return res.status(200).json({ message: "Time log deleted." });
   } catch (err) {
     console.error("Error deleting log:", err);
@@ -174,17 +218,30 @@ const coffeeBreakStart = async (req, res) => {
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
-    if (!activeLog) return res.status(400).json({ message: "No active time log found." });
-    let breaks = Array.isArray(activeLog.coffeeBreaks) ? activeLog.coffeeBreaks : [];
-    if (breaks.find((b) => b.end === null)) return res.status(400).json({ message: "A coffee break is already active." });
-    if (breaks.length >= 2) return res.status(400).json({ message: "Maximum coffee breaks reached." });
+    if (!activeLog)
+      return res.status(400).json({ message: "No active time log found." });
+    let breaks = Array.isArray(activeLog.coffeeBreaks)
+      ? activeLog.coffeeBreaks
+      : [];
+    if (breaks.find((b) => b.end === null))
+      return res
+        .status(400)
+        .json({ message: "A coffee break is already active." });
+    if (breaks.length >= 2)
+      return res
+        .status(400)
+        .json({ message: "Maximum coffee breaks reached." });
     breaks.push({ start: new Date().toISOString(), end: null });
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
       data: { coffeeBreaks: breaks },
     });
-    getIO().to(userId).emit("timeLogUpdated", { type: "coffeeBreakStart", data: updated });
-    return res.status(200).json({ message: "Coffee break started.", data: updated });
+    getIO()
+      .to(userId)
+      .emit("timeLogUpdated", { type: "coffeeBreakStart", data: updated });
+    return res
+      .status(200)
+      .json({ message: "Coffee break started.", data: updated });
   } catch (err) {
     console.error("Coffee break start error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -198,17 +255,27 @@ const coffeeBreakEnd = async (req, res) => {
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
-    if (!activeLog) return res.status(400).json({ message: "No active time log found." });
-    let breaks = Array.isArray(activeLog.coffeeBreaks) ? activeLog.coffeeBreaks : [];
+    if (!activeLog)
+      return res.status(400).json({ message: "No active time log found." });
+    let breaks = Array.isArray(activeLog.coffeeBreaks)
+      ? activeLog.coffeeBreaks
+      : [];
     const i = breaks.findIndex((b) => b.end === null);
-    if (i === -1) return res.status(400).json({ message: "No active coffee break to end." });
+    if (i === -1)
+      return res
+        .status(400)
+        .json({ message: "No active coffee break to end." });
     breaks[i].end = new Date().toISOString();
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
       data: { coffeeBreaks: breaks },
     });
-    getIO().to(userId).emit("timeLogUpdated", { type: "coffeeBreakEnd", data: updated });
-    return res.status(200).json({ message: "Coffee break ended.", data: updated });
+    getIO()
+      .to(userId)
+      .emit("timeLogUpdated", { type: "coffeeBreakEnd", data: updated });
+    return res
+      .status(200)
+      .json({ message: "Coffee break ended.", data: updated });
   } catch (err) {
     console.error("Coffee break end error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -222,14 +289,20 @@ const lunchBreakStart = async (req, res) => {
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
-    if (!activeLog) return res.status(400).json({ message: "No active time log found." });
-    if (activeLog.lunchBreak?.start && !activeLog.lunchBreak.end) return res.status(400).json({ message: "Lunch break already started." });
+    if (!activeLog)
+      return res.status(400).json({ message: "No active time log found." });
+    if (activeLog.lunchBreak?.start && !activeLog.lunchBreak.end)
+      return res.status(400).json({ message: "Lunch break already started." });
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
       data: { lunchBreak: { start: new Date().toISOString(), end: null } },
     });
-    getIO().to(userId).emit("timeLogUpdated", { type: "lunchBreakStart", data: updated });
-    return res.status(200).json({ message: "Lunch break started.", data: updated });
+    getIO()
+      .to(userId)
+      .emit("timeLogUpdated", { type: "lunchBreakStart", data: updated });
+    return res
+      .status(200)
+      .json({ message: "Lunch break started.", data: updated });
   } catch (err) {
     console.error("Lunch break start error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -243,8 +316,10 @@ const lunchBreakEnd = async (req, res) => {
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
-    if (!activeLog) return res.status(400).json({ message: "No active time log found." });
-    if (!activeLog.lunchBreak?.start || activeLog.lunchBreak?.end) return res.status(400).json({ message: "No active lunch break to end." });
+    if (!activeLog)
+      return res.status(400).json({ message: "No active time log found." });
+    if (!activeLog.lunchBreak?.start || activeLog.lunchBreak?.end)
+      return res.status(400).json({ message: "No active lunch break to end." });
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
       data: {
@@ -254,8 +329,12 @@ const lunchBreakEnd = async (req, res) => {
         },
       },
     });
-    getIO().to(userId).emit("timeLogUpdated", { type: "lunchBreakEnd", data: updated });
-    return res.status(200).json({ message: "Lunch break ended.", data: updated });
+    getIO()
+      .to(userId)
+      .emit("timeLogUpdated", { type: "lunchBreakEnd", data: updated });
+    return res
+      .status(200)
+      .json({ message: "Lunch break ended.", data: updated });
   } catch (err) {
     console.error("Lunch break end error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -267,32 +346,37 @@ const getCompanyTimeLogs = async (req, res) => {
     const companyId = req.user.companyId;
     const where = { user: { companyId } };
     if (req.query.employeeId) where.userId = req.query.employeeId;
-    if (req.query.departmentId) where.user = { ...where.user, departmentId: req.query.departmentId };
+    if (req.query.departmentId)
+      where.user = { ...where.user, departmentId: req.query.departmentId };
     if (req.query.status === "active") where.status = true;
     if (req.query.status === "completed") where.status = false;
     if (req.query.from || req.query.to) {
       where.timeIn = {};
-      if (req.query.from) where.timeIn.gte = new Date(`${req.query.from}T00:00:00Z`);
-      if (req.query.to) where.timeIn.lte = new Date(`${req.query.to}T23:59:59Z`);
+      if (req.query.from)
+        where.timeIn.gte = new Date(`${req.query.from}T00:00:00Z`);
+      if (req.query.to)
+        where.timeIn.lte = new Date(`${req.query.to}T23:59:59Z`);
     }
+    const page = parseInt(req.query.page) > 0 ? parseInt(req.query.page) : 1;
+    const limit =
+      parseInt(req.query.limit) > 0 ? parseInt(req.query.limit) : 20;
+    const skip = (page - 1) * limit;
+    const total = await prisma.timeLog.count({ where });
     const logs = await prisma.timeLog.findMany({
       where,
       orderBy: { timeIn: "desc" },
       include: {
-        user: {
-          include: {
-            profile: true,
-            department: true,
-            presence: true,
-          },
-        },
+        user: { include: { profile: true, department: true, presence: true } },
       },
+      skip,
+      take: limit,
     });
-
     const rows = logs.map((l) => ({
       id: l.id,
       userId: l.user.id,
-      employeeName: `${l.user.profile?.firstName || ""} ${l.user.profile?.lastName || ""}`.trim(),
+      employeeName: `${l.user.profile?.firstName || ""} ${
+        l.user.profile?.lastName || ""
+      }`.trim(),
       email: l.user.email,
       department: l.user.department?.name || "—",
       timeIn: l.timeIn,
@@ -318,7 +402,10 @@ const getCompanyTimeLogs = async (req, res) => {
       const dayEnd = new Date(dayStart);
       dayEnd.setHours(23, 59, 59, 999);
       const shiftRows = await prisma.userShift.findMany({
-        where: { userId: { in: userIds }, assignedDate: { gte: dayStart, lte: dayEnd } },
+        where: {
+          userId: { in: userIds },
+          assignedDate: { gte: dayStart, lte: dayEnd },
+        },
         include: { shift: true },
       });
       const map = {};
@@ -329,11 +416,57 @@ const getCompanyTimeLogs = async (req, res) => {
         r.shiftToday = map[r.userId] || "—";
       });
     }
-
-    return res.status(200).json({ data: rows });
+    return res.status(200).json({
+      data: rows,
+      meta: {
+        page,
+        perPage: limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
-    console.error("getCompanyTimeLogs error:", err);
     return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+const updateTimeLogDateTime = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { timeIn, timeOut } = req.body;
+
+    if (!timeIn && !timeOut)
+      return res.status(400).json({ message: "No fields provided." });
+
+    const log = await prisma.timeLog.findUnique({
+      where: { id },
+      include: { user: true },
+    });
+    if (!log) return res.status(404).json({ message: "Time log not found." });
+    if (req.user.companyId !== log.user.companyId)
+      return res
+        .status(403)
+        .json({ message: "Access denied: different company." });
+
+    const data = {};
+    if (timeIn) data.timeIn = new Date(timeIn);
+    if (timeOut) data.timeOut = new Date(timeOut);
+    if (timeIn) {
+      const lh = await recalcLateHours(log.userId, timeIn);
+      data.lateHours = lh;
+    }
+
+    const updated = await prisma.timeLog.update({ where: { id }, data });
+    getIO()
+      .to(log.userId)
+      .emit("timeLogUpdated", { type: "manualUpdate", data: updated });
+
+    return res
+      .status(200)
+      .json({ message: "Time log updated.", data: updated });
+  } catch (err) {
+    console.error("updateTimeLogDateTime error:", err);
+    return res.status(500).json({ message: "Internal server error." });
   }
 };
 
@@ -347,4 +480,5 @@ module.exports = {
   lunchBreakStart,
   lunchBreakEnd,
   getCompanyTimeLogs,
+  updateTimeLogDateTime,
 };
