@@ -153,11 +153,9 @@ model UserPresence {
 }
 
 model Company {
-  id     String  @id @default(cuid())
-  name   String  @unique
-  userId String? @unique // keep if you already had it
-
-  // ─── Business identification ──────────────────────────
+  id            String  @id @default(cuid())
+  name          String  @unique
+  userId        String? @unique
   dba           String?
   ein           String? @unique
   stateTaxIds   Json?

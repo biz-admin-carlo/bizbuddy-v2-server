@@ -14,8 +14,10 @@ const {
   lunchBreakStart,
   lunchBreakEnd,
   getCompanyTimeLogs,
+  updateTimeLogDateTime,
 } = require("@controllers/Features/timeLogController");
 
+router.patch("/:id/datetime", authenticate, updateTimeLogDateTime);
 router.post("/time-in", authenticate, timeIn);
 router.post("/time-out", authenticate, timeOut);
 router.get("/user", authenticate, getUserTimeLogs);
