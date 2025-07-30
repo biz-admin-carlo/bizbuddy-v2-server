@@ -25,6 +25,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "date-fns": "^2.30.0",
+    "dayjs": "^1.11.13",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
@@ -43,6 +44,8 @@
     "@middlewares": "./src/middlewares",
     "@routes": "./src/routes",
     "@models": "./src/models",
-    "@config": "./src/config"
+    "@config": "./src/config",
+    "@utils": "./src/utils",
+    "@workers": "./src/workers"
   }
 }

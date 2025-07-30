@@ -18,6 +18,8 @@ app.use(errorHandler);
 const server = http.createServer(app);
 const { init: initSocket } = require("@config/socket");
 initSocket(server);
+const { scheduleLeaveAccrual } = require("@workers/leaveAccrualWorker");
+scheduleLeaveAccrual();
 
 connect()
   .then(() => {

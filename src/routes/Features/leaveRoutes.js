@@ -13,15 +13,71 @@ const {
   getApprovers,
   getLeavesForApprover,
   deleteLeave,
+  getBalance,
+  listBalances,
 } = require("@controllers/Features/leaveController");
 
-router.post("/submit", authenticate, authorizeRoles("employee", "admin", "supervisor", "superadmin"), submitLeaveRequest);
-router.get("/my", authenticate, authorizeRoles("employee", "admin", "supervisor", "superadmin"), getUserLeaves);
-router.get("/pending", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), getPendingLeavesForApprover);
-router.get("/", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), getLeavesForApprover);
-router.put("/:id/approve", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), approveLeave);
-router.put("/:id/reject", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), rejectLeave);
-router.get("/approvers", authenticate, authorizeRoles("employee", "admin", "supervisor", "superadmin"), getApprovers);
-router.delete("/:id", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), deleteLeave);
+router.post(
+  "/submit",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  submitLeaveRequest
+);
+router.get(
+  "/my",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  getUserLeaves
+);
+router.get(
+  "/pending",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  getPendingLeavesForApprover
+);
+router.get(
+  "/",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  getLeavesForApprover
+);
+router.put(
+  "/:id/approve",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  approveLeave
+);
+router.put(
+  "/:id/reject",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  rejectLeave
+);
+router.get(
+  "/approvers",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  getApprovers
+);
+router.delete(
+  "/:id",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  deleteLeave
+);
+
+router.get(
+  "/balance",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  getBalance
+);
+
+router.get(
+  "/balances",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  listBalances
+);
 
 module.exports = router;

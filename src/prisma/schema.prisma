@@ -59,6 +59,51 @@ enum workLocation {
   hybrid
 }
 
+enum AccrualFrequency {
+  monthly
+  yearly
+  none
+}
+
+enum AccrualUnit {
+  hours
+  days
+}
+
+model LeavePolicy {
+  id               String           @id @default(cuid())
+  companyId        String
+  leaveType        String
+  annualAllocation Decimal          @db.Decimal(6, 2)
+  accrualFrequency AccrualFrequency @default(monthly)
+  accrualUnit      AccrualUnit      @default(hours)
+  carryOverAllowed Boolean          @default(false)
+  carryOverLimit   Decimal?         @db.Decimal(6, 2)
+  negativeAllowed  Boolean          @default(false)
+  createdAt        DateTime         @default(now()) @db.Timestamptz
+  updatedAt        DateTime         @updatedAt @db.Timestamptz
+
+  company  Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  balances LeaveBalance[]
+
+  @@unique([companyId, leaveType])
+}
+
+model LeaveBalance {
+  id            String    @id @default(cuid())
+  userId        String
+  policyId      String
+  balanceHours  Decimal   @default(0) @db.Decimal(8, 2)
+  lastAccrualAt DateTime? @db.Timestamptz
+  createdAt     DateTime  @default(now()) @db.Timestamptz
+  updatedAt     DateTime  @updatedAt @db.Timestamptz
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  policy LeavePolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, policyId])
+}
+
 model User {
   id           String     @id @default(cuid())
   username     String     @unique
@@ -94,6 +139,7 @@ model User {
 
   employmentDetail    EmploymentDetail?
   supervisedEmployees EmploymentDetail[] @relation("Supervisor")
+  LeaveBalance        LeaveBalance[]
 
   @@unique([companyId, email])
 }
@@ -185,6 +231,7 @@ model Company {
   Subscription  Subscription[]
   ShiftSchedule ShiftSchedule[]
   Holiday       Holiday[]
+  LeavePolicy   LeavePolicy[]
 }
 
 model Department {
