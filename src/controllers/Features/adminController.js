@@ -9,7 +9,7 @@ const getCompanyUsers = async (req, res) => {
       select: { companyId: true },
     });
     if (!admin) {
-      return res.status(404).json({ message: "Admin not found." });
+      return res.status(404).json({ message: "Admin not found. " });
     }
     const users = await prisma.users.findMany({
       where: { companyId: admin.companyId },
@@ -27,7 +27,9 @@ const getCompanyUsers = async (req, res) => {
       },
       orderBy: { createdAt: "desc" },
     });
-    return res.status(200).json({ message: "Users fetched successfully.", data: users });
+    return res
+      .status(200)
+      .json({ message: "Users fetched successfully.", data: users });
   } catch (error) {
     console.error("Error in getCompanyUsers:", error);
     return res.status(500).json({ message: "Internal server error." });
