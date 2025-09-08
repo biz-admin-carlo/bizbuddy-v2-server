@@ -49,4 +49,8 @@ router.use("/overtime", overtimeRoutes);
 router.use("/company-settings", companySettingsRoutes);
 router.use("/employment-details", employmentDetailRoutes);
 
+router.get("/", (req, res) => {
+    res.status(200).json({ message: "Server is up and running!" });
+});
+
 module.exports = router;

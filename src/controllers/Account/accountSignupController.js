@@ -4,6 +4,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { prisma } = require("@config/connection");
 const { JWT_SECRET } = require("@config/env");
+const { sendMail } = require("@utils/mailer");
+const { renderWelcome } = require("@emails/renderTemplate");
 
 const getAllSubscriptionPlans = async (req, res) => {
   try {
@@ -61,6 +63,7 @@ const checkUsername = async (req, res) => {
 const signUp = async (req, res) => {
   try {
     const { firstName, lastName, email, password, companyName, country, currency, language, subscriptionPlanId, isPaid, username } = req.body;
+    const plainPassword = password;
 
     if (!firstName || !lastName || !email || !password || !companyName || !subscriptionPlanId) {
       return res.status(400).json({ message: "Missing required fields." });
@@ -137,6 +140,30 @@ const signUp = async (req, res) => {
 
       return { token, newUser, newCompany, newSubscription };
     });
+
+    try {
+      const html = renderWelcome({
+        firstName,
+        companyName,
+        email: result.newUser.email,
+        password: plainPassword, // you decided no token TTL; you’re emailing it
+      });
+    
+      await sendMail({
+        to: result.newUser.email,
+        subject: "Welcome to BizBuddy — your account is live",
+        html,
+        text: `Hi ${firstName}, your BizBuddy account for ${companyName} is ready.
+    Email: ${result.newUser.email}
+    Password: ${plainPassword}
+    `,
+      });
+      // optional: log success
+      console.log(`[signUp] Welcome email sent to ${result.newUser.email}`);
+    } catch (err) {
+      console.error("[signUp] Failed to send welcome email:", err);
+      // do not throw; account is already created
+    }
 
     return res.status(201).json({
       message: "Account, company, and subscription created successfully.",

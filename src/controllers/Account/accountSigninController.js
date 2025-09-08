@@ -215,6 +215,7 @@ const updateProfile = async (req, res) => {
     return res.status(500).json({ message: "Internal server error." });
   }
 };
+
 const changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword, confirmPassword } = req.body;
