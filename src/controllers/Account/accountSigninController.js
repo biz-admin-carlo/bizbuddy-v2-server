@@ -18,7 +18,9 @@ const getUserEmail = async (req, res) => {
       include: { company: { select: { id: true, name: true } } },
     });
     if (!users || users.length === 0) {
-      return res.status(404).json({ message: "No users found with this email." });
+      return res
+        .status(404)
+        .json({ message: "No users found with this email." });
     }
     const result = users.map((user) => ({
       userId: user.id,
@@ -53,7 +55,9 @@ const getUserProfile = async (req, res) => {
     }
     const { userId, companyId } = decoded;
     if (!userId || !companyId) {
-      return res.status(400).json({ message: "Token missing userId or companyId." });
+      return res
+        .status(400)
+        .json({ message: "Token missing userId or companyId." });
     }
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -77,7 +81,10 @@ const getUserProfile = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
-    let latestSubscription = user.Subscription && user.Subscription.length > 0 ? user.Subscription[0] : null;
+    let latestSubscription =
+      user.Subscription && user.Subscription.length > 0
+        ? user.Subscription[0]
+        : null;
     if (!latestSubscription) {
       const companyWithSub = await prisma.company.findUnique({
         where: { id: companyId },
@@ -90,7 +97,12 @@ const getUserProfile = async (req, res) => {
           },
         },
       });
-      latestSubscription = companyWithSub && companyWithSub.Subscription && companyWithSub.Subscription.length > 0 ? companyWithSub.Subscription[0] : null;
+      latestSubscription =
+        companyWithSub &&
+        companyWithSub.Subscription &&
+        companyWithSub.Subscription.length > 0
+          ? companyWithSub.Subscription[0]
+          : null;
     }
     const { password, Subscription, ...userData } = user;
     return res.status(200).json({
@@ -113,7 +125,9 @@ const signIn = async (req, res) => {
   try {
     const { email, password, companyId } = req.query;
     if (!email || !password || !companyId) {
-      return res.status(400).json({ message: "Email, password, and companyId are required." });
+      return res
+        .status(400)
+        .json({ message: "Email, password, and companyId are required." });
     }
     const normalizedEmail = email.trim().toLowerCase();
     const user = await prisma.user.findFirst({
@@ -137,7 +151,9 @@ const signIn = async (req, res) => {
     const tokenPayload = { userId: user.id, companyId: user.companyId };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: "30d" });
     console.log("## Success");
-    return res.status(200).json({ message: "Sign-in successful.", data: { token } });
+    return res
+      .status(200)
+      .json({ message: "Sign-in successful.", data: { token } });
   } catch (error) {
     console.error("Error in signIn:", error);
     return res.status(500).json({ message: "Internal server error." });
@@ -153,12 +169,16 @@ const updateProfile = async (req, res) => {
     const { id: userId, companyId } = req.user;
     let { username, email, firstName, lastName, phoneNumber } = req.body;
     if (!username || !email) {
-      return res.status(400).json({ message: "Username and email are required." });
+      return res
+        .status(400)
+        .json({ message: "Username and email are required." });
     }
     const normalizedUsername = username.trim().toLowerCase();
     const normalizedEmail = email.trim().toLowerCase();
     if (!/^[a-z0-9]+$/i.test(normalizedUsername)) {
-      return res.status(400).json({ message: "Username must be alphanumeric." });
+      return res
+        .status(400)
+        .json({ message: "Username must be alphanumeric." });
     }
     const duplicateUsername = await prisma.user.findFirst({
       where: {
@@ -177,7 +197,9 @@ const updateProfile = async (req, res) => {
       },
     });
     if (duplicateEmail) {
-      return res.status(400).json({ message: "Email already exists within the company." });
+      return res
+        .status(400)
+        .json({ message: "Email already exists within the company." });
     }
     const updatedUser = await prisma.user.update({
       where: { id: userId },
@@ -220,10 +242,14 @@ const changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword, confirmPassword } = req.body;
     if (!oldPassword || !newPassword || !confirmPassword) {
-      return res.status(400).json({ message: "All password fields are required." });
+      return res
+        .status(400)
+        .json({ message: "All password fields are required." });
     }
     if (newPassword !== confirmPassword) {
-      return res.status(400).json({ message: "New password and confirmation do not match." });
+      return res
+        .status(400)
+        .json({ message: "New password and confirmation do not match." });
     }
     const { id: userId } = req.user;
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -247,6 +273,61 @@ const changePassword = async (req, res) => {
   }
 };
 
+const getDeviceToken = async (req, res) => {
+  try {
+    const { id: userId } = req.user;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, deviceToken: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    return res.status(200).json({
+      message: "Device token retrieved successfully.",
+      data: { deviceToken: user.deviceToken },
+    });
+  } catch (error) {
+    console.error("Error in getDeviceToken:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+const updateDeviceToken = async (req, res) => {
+  try {
+    const { id: userId } = req.user;
+    const { deviceToken } = req.body;
+
+    if (!deviceToken) {
+      return res.status(400).json({ message: "Device token is required." });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        deviceToken: deviceToken.trim(),
+        updatedAt: new Date(),
+      },
+    });
+
+    return res.status(200).json({
+      message: "Device token updated successfully.",
+      data: { deviceToken: updatedUser.deviceToken },
+    });
+  } catch (error) {
+    console.error("Error in updateDeviceToken:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
 module.exports = {
   getUserEmail,
   signIn,
@@ -254,4 +335,6 @@ module.exports = {
   updateProfile,
   changePassword,
   signOut,
+  getDeviceToken,
+  updateDeviceToken,
 };

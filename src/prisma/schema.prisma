@@ -338,6 +338,7 @@ model User {
   status       userStatus @default(active)
   hireDate     DateTime?  @db.Timestamptz
   employeeId   String?
+  deviceToken  String?
   createdAt    DateTime   @default(now()) @db.Timestamptz
   updatedAt    DateTime   @default(now()) @updatedAt @db.Timestamptz
 
