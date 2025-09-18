@@ -3,14 +3,30 @@
 const express = require("express");
 const router = express.Router();
 const authenticate = require("@middlewares/authMiddleware");
-const { getUserEmail, getUserProfile, signIn, signOut, updateProfile, changePassword } = require("@controllers/Account/accountSigninController");
-const { getAllSubscriptionPlans, checkCompanyName, checkUsername, signUp } = require("@controllers/Account/accountSignupController");
+const {
+  getUserEmail,
+  getUserProfile,
+  signIn,
+  signOut,
+  updateProfile,
+  changePassword,
+  getDeviceToken,
+  updateDeviceToken,
+} = require("@controllers/Account/accountSigninController");
+const {
+  getAllSubscriptionPlans,
+  checkCompanyName,
+  checkUsername,
+  signUp,
+} = require("@controllers/Account/accountSignupController");
 const deleteAccountController = require("@controllers/Account/accountDeleteController");
 
 router.get("/get-user-email", getUserEmail);
 router.get("/profile", getUserProfile);
 router.put("/profile", authenticate, updateProfile);
 router.put("/change-password", authenticate, changePassword);
+router.get("/device-token", authenticate, getDeviceToken);
+router.post("/device-token", authenticate, updateDeviceToken);
 router.get("/sign-in", signIn);
 router.post("/sign-out", signOut);
 router.get("/plans", getAllSubscriptionPlans);
