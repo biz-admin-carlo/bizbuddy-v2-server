@@ -275,7 +275,11 @@ const changePassword = async (req, res) => {
 
 const getDeviceToken = async (req, res) => {
   try {
-    const { id: userId } = req.user;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ message: "User ID is required." });
+    }
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -298,8 +302,11 @@ const getDeviceToken = async (req, res) => {
 
 const updateDeviceToken = async (req, res) => {
   try {
-    const { id: userId } = req.user;
-    const { deviceToken } = req.body;
+    const { userId, deviceToken } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ message: "User ID is required." });
+    }
 
     if (!deviceToken) {
       return res.status(400).json({ message: "Device token is required." });
