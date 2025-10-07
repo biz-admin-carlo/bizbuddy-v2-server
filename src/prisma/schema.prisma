@@ -692,6 +692,9 @@ model Overtime {
   status           overtimeStatus @default(pending)
   createdAt        DateTime       @default(now()) @db.Timestamptz
   updatedAt        DateTime       @default(now()) @updatedAt @db.Timestamptz
+  companyId        String?
+  departmentId     String?
+  
 
   timeLog   TimeLog @relation(fields: [timeLogId], references: [id], onDelete: Cascade)
   requester User    @relation("OTRequester", fields: [requesterId], references: [id], onDelete: Cascade)

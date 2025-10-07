@@ -18,11 +18,13 @@ const {
   checkCompanyName,
   checkUsername,
   signUp,
+  getApprover
 } = require("@controllers/Account/accountSignupController");
 const deleteAccountController = require("@controllers/Account/accountDeleteController");
 
 router.get("/get-user-email", getUserEmail);
 router.get("/profile", getUserProfile);
+router.get("/approver", authenticate, getApprover);
 router.put("/profile", authenticate, updateProfile);
 router.put("/change-password", authenticate, changePassword);
 router.get("/device-token", authenticate, getDeviceToken);

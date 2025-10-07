@@ -26,65 +26,164 @@ function calculateLateHours(timeLog, userShift) {
 
 const submitOvertime = async (req, res) => {
   try {
-    const { timeLogId, approverId, requesterReason, requestedHours, lateHours: lateHoursFromBody } = req.body;
+    const { 
+      timeLogId, 
+      approverId, 
+      requesterReason, 
+      requestedHours, 
+      lateHours: lateHoursFromBody,
+      originalClockOut,
+      projectedClockOut,
+      totalProjectedHours
+    } = req.body;
 
     if (!timeLogId || !approverId) {
       return res.status(400).json({ message: "timeLogId and approverId are required." });
     }
 
-    const timeLog = await prisma.timeLog.findUnique({ where: { id: timeLogId } });
+    if (!requestedHours || parseFloat(requestedHours) <= 0) {
+      return res.status(400).json({ message: "requestedHours must be greater than 0." });
+    }
+
+    // Validate timeLog exists and belongs to user
+    const timeLog = await prisma.timeLog.findUnique({ 
+      where: { id: timeLogId },
+      include: {
+        user: {
+          include: {
+            department: true,
+            employmentDetail: true
+          }
+        }
+      }
+    });
+    
     if (!timeLog || timeLog.userId !== req.user.id) {
       return res.status(404).json({ message: "TimeLog not found." });
     }
 
-    const dup = await prisma.overtime.findFirst({
+    // Check for duplicate requests
+    const existingRequest = await prisma.overtime.findFirst({
       where: { timeLogId, requesterId: req.user.id },
     });
-    if (dup) {
-      return res.status(400).json({ message: "OT request already exists for this TimeLog." });
+    
+    if (existingRequest) {
+      return res.status(400).json({ message: "Overtime request already exists for this TimeLog." });
     }
 
+    // Validate approver
     const approver = await prisma.user.findFirst({
       where: {
         id: approverId,
         companyId: req.user.companyId,
         role: { in: ["admin", "supervisor", "superadmin"] },
+        status: 'active'
       },
     });
-    if (!approver || approverId === req.user.id) {
-      return res.status(400).json({ message: "Invalid approver." });
+    
+    if (!approver) {
+      return res.status(400).json({ message: "Invalid or inactive approver." });
     }
 
-    const dayStart = new Date(timeLog.timeIn);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(dayStart);
-    dayEnd.setHours(23, 59, 59, 999);
+    if (approverId === req.user.id) {
+      return res.status(400).json({ message: "You cannot approve your own overtime request." });
+    }
 
-    const userShift = await prisma.userShift.findFirst({
-      where: {
-        userId: req.user.id,
-        assignedDate: { gte: dayStart, lte: dayEnd },
-      },
-      include: { shift: true },
-    });
+    // Calculate late hours if not provided
+    let lateHours = null;
+    if (lateHoursFromBody != null) {
+      lateHours = Number(lateHoursFromBody);
+    } else {
+      const dayStart = new Date(timeLog.timeIn);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setHours(23, 59, 59, 999);
 
-    const calcLate = calculateLateHours(timeLog, userShift);
-    const lateHours = lateHoursFromBody != null ? Number(lateHoursFromBody) : calcLate != null ? calcLate : null;
+      const userShift = await prisma.userShift.findFirst({
+        where: {
+          userId: req.user.id,
+          assignedDate: { gte: dayStart, lte: dayEnd },
+        },
+        include: { shift: true },
+      });
+
+      const calcLate = calculateLateHours(timeLog, userShift);
+      lateHours = calcLate != null ? calcLate : 0;
+    }
+
+    // Determine user's department
+    const userDepartmentId = timeLog.user.departmentId || timeLog.user.employmentDetail?.departmentId;
+
+    // Create overtime request
     const newOT = await prisma.overtime.create({
       data: {
         timeLogId,
         requesterId: req.user.id,
         approverId,
-        requesterReason: requesterReason ?? null,
-        requestedHours: requestedHours ?? null,
+        requesterReason: requesterReason?.trim() || null,
+        requestedHours: parseFloat(requestedHours),
         lateHours,
+        companyId: req.user.companyId,
+        departmentId: userDepartmentId || null,
       },
+      include: {
+        timeLog: {
+          select: {
+            timeIn: true,
+            timeOut: true
+          }
+        },
+        requester: {
+          select: {
+            id: true,
+            email: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true
+              }
+            }
+          }
+        },
+        approver: {
+          select: {
+            id: true,
+            email: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true
+              }
+            }
+          }
+        }
+      }
     });
 
-    return res.status(201).json({ message: "Overtime request submitted.", data: format(newOT) });
+    // Log the activity for audit trail
+    await prisma.userActivity.create({
+      data: {
+        userId: req.user.id,
+        activityDescription: `Submitted overtime request for ${requestedHours}h on ${new Date(timeLog.timeIn).toLocaleDateString()}`
+      }
+    });
+
+    return res.status(201).json({ 
+      message: "Overtime request submitted successfully.",
+      data: {
+        ...format(newOT),
+        projectedClockOut,
+        totalProjectedHours,
+        originalClockOut: timeLog.timeOut
+      }
+    });
+
   } catch (err) {
-    console.error("submitOvertime:", err);
-    return res.status(500).json({ message: "Internal server error." });
+    console.error("submitOvertime error:", err);
+    return res.status(500).json({ 
+      message: "Internal server error.",
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 };
 
@@ -162,14 +261,62 @@ const deleteOT = async (req, res) => {
 
 const getAllOT = async (req, res) => {
   try {
+    let whereClause = {};
+
+    // Build filter based on user role
+    switch (req.user.role) {
+      case "superadmin":
+        // Superadmin sees ALL overtime requests across all companies
+        whereClause = {};
+        break;
+
+      case "admin":
+        // Admin sees all OT requests from their assigned company
+        whereClause = {
+          requester: {
+            companyId: req.user.companyId
+          }
+        };
+        break;
+
+      case "supervisor":
+        // Supervisor/Department Head sees all OT requests from their department
+        whereClause = {
+          requester: {
+            departmentId: req.user.departmentId
+          }
+        };
+        break;
+
+      default:
+        // Fallback: only show where user is the direct approver
+        whereClause = {
+          approverId: req.user.id
+        };
+    }
+
     const ots = await prisma.overtime.findMany({
-      where: { approverId: req.user.id },
+      where: whereClause,
       include: {
         timeLog: true,
-        requester: { select: { id: true, email: true, username: true } },
+        requester: { 
+          select: { 
+            id: true, 
+            email: true, 
+            username: true,
+            departmentId: true,
+            companyId: true,
+            department: { select: { id: true, name: true } },
+            company: { select: { id: true, name: true } }
+          } 
+        },
+        approver: {
+          select: { id: true, email: true, username: true }
+        }
       },
       orderBy: { createdAt: "desc" },
     });
+    
     return res.status(200).json({ data: ots.map(format) });
   } catch (err) {
     console.error("getAllOT:", err);
