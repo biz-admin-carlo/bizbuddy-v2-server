@@ -25,6 +25,7 @@ const leaveBalanceRoutes = require("@routes/Features/leaveBalanceRoutes");
 const overtimeRoutes = require("@routes/Features/overtimeRoutes");
 const companySettingsRoutes = require("@routes/Account/companySettingsRoutes");
 const employmentDetailRoutes = require("@routes/Features/employmentDetailRoutes");
+const accountDeletionRoutes = require("@routes/Features/accountDeletionRoutes");
 
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
@@ -48,6 +49,7 @@ router.use("/leave-balances", leaveBalanceRoutes);
 router.use("/overtime", overtimeRoutes);
 router.use("/company-settings", companySettingsRoutes);
 router.use("/employment-details", employmentDetailRoutes);
+router.use("/account-deletion", accountDeletionRoutes);
 
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });

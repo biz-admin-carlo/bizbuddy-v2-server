@@ -4,7 +4,7 @@
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
-    "dev": "PORT=5001 nodemon server.js",
+    "dev": "PORT=4000 nodemon server.js",
     "start": "npm run prisma:sync && node server.js",
     "seed": "node src/prisma/seed.js",
     "prisma:sync": "prisma db push --accept-data-loss && prisma generate",
@@ -32,7 +32,7 @@
     "jsonwebtoken": "^9.0.2",
     "module-alias": "^2.2.3",
     "node-cron": "^3.0.3",
-    "nodemailer": "^7.0.6",
+    "nodemailer": "^7.0.9",
     "pg": "^8.13.1",
     "socket.io": "^4.8.1",
     "stripe": "^17.7.0"
