@@ -5,11 +5,15 @@ const router = express.Router();
 const {
   checkEmailGenerateCode,
   verifyCode,
-  confirmDeleteAccountRequest
+  confirmDeleteAccountRequest,
+  getAuthenticatedRequest
 } = require("@controllers/Features/requestAccountDeletionController");
+const authenticate = require("@middlewares/authMiddleware");
 
 router.post("/send-code", checkEmailGenerateCode);
-router.post("/verify-code",  verifyCode);
+router.post("/verify-code", verifyCode);
 router.post("/confirm",  confirmDeleteAccountRequest);
+
+router.get("/get-request", authenticate, getAuthenticatedRequest )
 
 module.exports = router;
