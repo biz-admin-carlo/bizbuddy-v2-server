@@ -369,8 +369,71 @@ const confirmDeleteAccountRequest = async (req, res) => {
   }
 };
 
+const getAuthenticatedRequest = async (req, res) => {
+  try {
+    const { id, role, companyId } = req.user;
+
+    if (!role || !companyId) {
+      return res.status(400).json({ message: "Invalid user context." });
+    }
+
+    let whereCondition = {};
+
+    // Role-based access control
+    if (role === "admin" || role === "superadmin") {
+      // Admins see all requests in their company
+      whereCondition = { companyId };
+    } else if (role === "departmentHead") {
+      // Department heads only see requests within their department
+      const user = await prisma.user.findUnique({
+        where: { id },
+        select: { departmentId: true },
+      });
+
+      if (!user?.departmentId) {
+        return res.status(403).json({ message: "No department assigned." });
+      }
+
+      whereCondition = {
+        companyId,
+        departmentId: user.departmentId,
+      };
+    } else {
+      // Employees and other roles not allowed
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    const requests = await prisma.accountDeletionRequest.findMany({
+      where: whereCondition,
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            profile: { select: { firstName: true, lastName: true } },
+          },
+        },
+        department: { select: { name: true } },
+        company: { select: { name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: requests.length,
+      data: requests,
+    });
+  } catch (error) {
+    console.error("Error fetching deletion requests:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+
 module.exports = {
   checkEmailGenerateCode,
   verifyCode,
   confirmDeleteAccountRequest,
+  getAuthenticatedRequest
 };
