@@ -4,7 +4,7 @@
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
-    "dev": "nodemon server.js",
+    "dev": "PORT=5001 nodemon server.js",
     "start": "npm run prisma:sync && node server.js",
     "seed": "node src/prisma/seed.js",
     "prisma:sync": "prisma db push --accept-data-loss && prisma generate",
@@ -28,10 +28,11 @@
     "dayjs": "^1.11.13",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "firebase-admin": "^13.5.0",
     "jsonwebtoken": "^9.0.2",
     "module-alias": "^2.2.3",
     "node-cron": "^3.0.3",
-    "nodemailer": "^7.0.6",
+    "nodemailer": "^7.0.9",
     "pg": "^8.13.1",
     "socket.io": "^4.8.1",
     "stripe": "^17.7.0"

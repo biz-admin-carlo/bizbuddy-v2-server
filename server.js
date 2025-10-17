@@ -18,8 +18,16 @@ app.use(errorHandler);
 const server = http.createServer(app);
 const { init: initSocket } = require("@config/socket");
 initSocket(server);
+const { initFirebase } = require("@config/firebase");
+initFirebase();
 const { scheduleLeaveAccrual } = require("@workers/leaveAccrualWorker");
 scheduleLeaveAccrual();
+const {
+  scheduleClockOutReminders,
+} = require("@workers/clockOutReminderWorker");
+scheduleClockOutReminders();
+const { scheduleClockInReminders } = require("@workers/clockInReminderWorker");
+scheduleClockInReminders();
 
 connect()
   .then(() => {
