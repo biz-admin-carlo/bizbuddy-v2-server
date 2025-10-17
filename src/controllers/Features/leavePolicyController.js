@@ -45,4 +45,43 @@ const deletePolicy = async (req, res) => {
   res.json({ message: "deleted" });
 };
 
-module.exports = { getPolicies, createPolicy, updatePolicy, deletePolicy };
+const getAvailablePolicies = async (req, res) => {
+  try {
+    console.log('Fetching policies for user:', req.user.id, 'company:', req.user.companyId);
+    
+    const policies = await prisma.leavePolicy.findMany({
+      where: { 
+        companyId: req.user.companyId 
+      },
+      select: {
+        id: true,
+        leaveType: true,
+        annualAllocation: true,
+        accrualUnit: true,
+        accrualFrequency: true,
+        carryOverAllowed: true,
+        carryOverLimit: true,
+        negativeAllowed: true,
+        createdAt: true,
+        updatedAt: true
+      },
+      orderBy: {
+        leaveType: 'asc' 
+      }
+    });
+        
+    res.json({
+      success: true,
+      data: policies
+    });
+  } catch (error) {
+    console.error('Error fetching available policies:', error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch available leave policies",
+      error: error.message
+    });
+  }
+};
+
+module.exports = { getPolicies, createPolicy, updatePolicy, deletePolicy, getAvailablePolicies };
