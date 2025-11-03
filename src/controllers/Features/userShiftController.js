@@ -28,4 +28,32 @@ const getUserShifts = async (req, res) => {
   }
 };
 
-module.exports = { getUserShifts };
+const getCompanyEmployees = async (req, res) => {
+  try {
+    const employees = await prisma.user.findMany({
+      where: { companyId: req.user.companyId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        profile: {
+          select: {
+            firstName: true,
+            lastName: true,
+          }
+        }
+      },
+      orderBy: { email: "asc" },
+    });
+    
+    return res.status(200).json({
+      message: "Company employees retrieved successfully.",
+      data: employees,
+    });
+  } catch (error) {
+    console.error("Error fetching company employees:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+module.exports = { getUserShifts, getCompanyEmployees };

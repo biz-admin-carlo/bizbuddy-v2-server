@@ -17,6 +17,15 @@ const {
   listBalances,
 } = require("@controllers/Features/leaveController");
 
+const { getAvailablePolicies } = require("@controllers/Features/leavePolicyController");
+
+router.get(
+  "/policies",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  getAvailablePolicies
+);
+
 router.post(
   "/submit",
   authenticate,
