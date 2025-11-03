@@ -62,15 +62,6 @@ const submitOvertime = async (req, res) => {
       return res.status(404).json({ message: "TimeLog not found." });
     }
 
-    // Check for duplicate requests
-    const existingRequest = await prisma.overtime.findFirst({
-      where: { timeLogId, requesterId: req.user.id },
-    });
-    
-    if (existingRequest) {
-      return res.status(400).json({ message: "Overtime request already exists for this TimeLog." });
-    }
-
     // Validate approver
     const approver = await prisma.user.findFirst({
       where: {
@@ -260,6 +251,8 @@ const deleteOT = async (req, res) => {
 };
 
 const getAllOT = async (req, res) => {
+  console.log(req.user);
+  
   try {
     let whereClause = {};
 
@@ -324,6 +317,145 @@ const getAllOT = async (req, res) => {
   }
 };
 
+const detectSmartOvertime = async (req, res) => {
+  try {
+    const { id: userId, role, companyId } = req.user;
+    const isAdmin = ["admin", "superadmin", "hr"].includes(role.toLowerCase());
+
+    // Default date window: last 30 days
+    const toDate = new Date();
+    const fromDate = new Date();
+    fromDate.setDate(toDate.getDate() - 30);
+
+    // 1️⃣ Build TimeLog query (token-based)
+    const whereClause = isAdmin
+      ? { user: { companyId } }
+      : { userId };
+
+    whereClause.timeIn = { gte: fromDate, lte: toDate };
+
+    const timeLogs = await prisma.timeLog.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          include: {
+            profile: true,
+            department: true,
+          },
+        },
+      },
+      orderBy: { timeIn: "desc" },
+    });
+
+    if (!timeLogs.length) {
+      return res.status(200).json({ data: [], message: "No timelogs found for analysis." });
+    }
+
+    // 2️⃣ Fetch all userShifts for date range
+    const userIds = [...new Set(timeLogs.map((t) => t.userId))];
+    const userShifts = await prisma.userShift.findMany({
+      where: {
+        userId: { in: userIds },
+        assignedDate: { gte: fromDate, lte: toDate },
+      },
+      include: { shift: true },
+    });
+
+    // Create lookup map
+    const shiftMap = new Map();
+    for (const s of userShifts) {
+      const key = `${s.userId}-${s.assignedDate.toISOString().slice(0, 10)}`;
+      shiftMap.set(key, s);
+    }
+
+    // 3️⃣ (Optional) Fetch company settings for minimum OT threshold
+    const companyRecord = await prisma.company.findFirst({
+      where: { id: companyId },
+    });
+    const minOvertimeMinutes = companyRecord?.minimumOvertimeMinutes ?? 15;
+
+    const results = [];
+
+    // 4️⃣ Loop through logs and compare scheduled vs actual
+    for (const log of timeLogs) {
+      if (!log.timeOut) continue; // skip active sessions
+
+      const logDate = log.timeIn.toISOString().slice(0, 10);
+      const shift = shiftMap.get(`${log.userId}-${logDate}`);
+
+      const scheduledStart = shift?.customStartTime || shift?.shift?.startTime || null;
+      const scheduledEnd = shift?.customEndTime || shift?.shift?.endTime || null;
+
+      const actualStart = new Date(log.timeIn);
+      const actualEnd = new Date(log.timeOut);
+      const elapsedMins = (actualEnd - actualStart) / 60000;
+
+      let overtimeMins = 0;
+      let type = "Scheduled";
+
+      if (scheduledEnd && scheduledStart) {
+        const schedStartRef = new Date(actualStart);
+        const schedEndRef = new Date(actualStart);
+
+        // Align scheduled times to actual date (since shift times are usually "time only")
+        const [startHours, startMins] = [
+          new Date(scheduledStart).getHours(),
+          new Date(scheduledStart).getMinutes(),
+        ];
+        const [endHours, endMins] = [
+          new Date(scheduledEnd).getHours(),
+          new Date(scheduledEnd).getMinutes(),
+        ];
+
+        schedStartRef.setHours(startHours, startMins, 0, 0);
+        schedEndRef.setHours(endHours, endMins, 0, 0);
+
+        // Calculate duration difference
+        const schedDurationMins = (schedEndRef - schedStartRef) / 60000;
+        overtimeMins = Math.max(0, elapsedMins - schedDurationMins);
+      } else {
+        // No scheduled shift - treat full duration as potential OT
+        console.log("HELOO")
+        type = "Unscheduled";
+        overtimeMins = elapsedMins;
+      }
+
+      // Skip trivial OTs (below threshold)
+      if (overtimeMins < minOvertimeMinutes) continue;
+
+      results.push({
+        timeLogId: log.id,
+        userId: log.userId,
+        employeeName: `${log.user.profile?.firstName || ""} ${log.user.profile?.lastName || ""}`.trim(),
+        department: log.user.department?.name || "—",
+        date: logDate,
+        scheduledStart: scheduledStart ? new Date(scheduledStart).toISOString() : null,
+        scheduledEnd: scheduledEnd ? new Date(scheduledEnd).toISOString() : null,
+        actualStart: log.timeIn,
+        actualEnd: log.timeOut,
+        elapsedMins,
+        overtimeMins,
+        overtimeHours: +(overtimeMins / 60).toFixed(2),
+        type, // "Scheduled" or "Unscheduled"
+        detectedAt: new Date().toISOString(),
+      });
+    }
+    console.log(results);
+    // 5️⃣ Return detections
+    return res.status(200).json({
+      message: "Smart overtime detection complete.",
+      meta: { count: results.length },
+      data: results,
+    });
+  } catch (err) {
+    console.error("detectSmartOvertime:", err);
+    return res.status(500).json({
+      message: "Internal server error.",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
+    });
+  }
+};
+
 module.exports = {
   submitOvertime,
   getMyOT,
@@ -332,4 +464,5 @@ module.exports = {
   rejectOT,
   deleteOT,
   getAllOT,
+  detectSmartOvertime
 };

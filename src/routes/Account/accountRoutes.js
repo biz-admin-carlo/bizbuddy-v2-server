@@ -18,8 +18,13 @@ const {
   checkCompanyName,
   checkUsername,
   signUp,
-  getApprover
+  getApprover,
 } = require("@controllers/Account/accountSignupController");
+const {
+  requestPasswordReset,
+  verifyResetToken,
+  resetPassword,
+} = require("@controllers/Account/resetPasswordController");
 const deleteAccountController = require("@controllers/Account/accountDeleteController");
 
 router.get("/get-user-email", getUserEmail);
@@ -36,5 +41,9 @@ router.get("/check-company-name", checkCompanyName);
 router.get("/check-username", checkUsername);
 router.post("/sign-up", signUp);
 router.delete("/delete", authenticate, deleteAccountController);
+
+router.post("/reset-password", requestPasswordReset);
+router.get("/reset-password/verify", verifyResetToken);
+router.put("/reset-password", resetPassword);
 
 module.exports = router;

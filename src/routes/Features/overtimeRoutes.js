@@ -4,9 +4,10 @@ const express = require("express");
 const router = express.Router();
 const authenticate = require("@middlewares/authMiddleware");
 const { authorizeRoles } = require("@middlewares/roleMiddleware");
-const { submitOvertime, getMyOT, getPendingOT, approveOT, rejectOT, deleteOT, getAllOT } = require("@controllers/Features/overtimeController");
+const { submitOvertime, getMyOT, getPendingOT, approveOT, rejectOT, deleteOT, getAllOT, detectSmartOvertime } = require("@controllers/Features/overtimeController");
 
 router.post("/submit", authenticate, authorizeRoles("employee", "admin", "supervisor", "superadmin"), submitOvertime);
+router.get("/smart-detect", authenticate, authorizeRoles("employee", "admin", "supervisor", "superadmin"), detectSmartOvertime);
 router.get("/my", authenticate, authorizeRoles("employee", "admin", "supervisor", "superadmin"), getMyOT);
 router.get("/pending", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), getPendingOT);
 router.put("/:id/approve", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), approveOT);

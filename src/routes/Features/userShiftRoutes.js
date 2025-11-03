@@ -4,8 +4,10 @@ const express = require("express");
 const router = express.Router();
 const authenticate = require("@middlewares/authMiddleware");
 
-const { getUserShifts } = require("@controllers/Features/userShiftController");
+const { getUserShifts, getCompanyEmployees } = require("@controllers/Features/userShiftController");
 
 router.get("/", authenticate, getUserShifts);
+router.get("/company-employees", authenticate, getCompanyEmployees);
+
 
 module.exports = router;

@@ -4,35 +4,78 @@ const { prisma } = require("@config/connection");
 
 const createDepartment = async (req, res) => {
   try {
-    let { name, supervisorId } = req.body;
+    let { name, supervisorId, paidBreak } = req.body;
     const companyId = req.user.companyId;
+
+    // Validate required fields
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "Department name is required." });
     }
-    name = name.trim().toLowerCase();
+
+    name = name.trim();
+
     const existingDept = await prisma.department.findFirst({
-      where: { companyId, name: { equals: name, mode: "insensitive" } },
+      where: { 
+        companyId, 
+        name: { equals: name, mode: "insensitive" } 
+      },
     });
+
     if (existingDept) {
-      return res.status(409).json({ error: "Department already exists in your company." });
+      return res.status(409).json({ error: "A department with this name already exists." });
     }
-    let supervisor = null;
-    if (supervisorId) {
-      supervisor = await prisma.user.findFirst({
-        where: { id: supervisorId, companyId, role: "supervisor" },
+
+    // Validate supervisor if provided
+    if (supervisorId && supervisorId !== "none" && supervisorId !== "") {
+      const supervisor = await prisma.user.findFirst({
+        where: { 
+          id: supervisorId, 
+          companyId, 
+          role: "supervisor" 
+        },
       });
+
       if (!supervisor) {
         return res.status(400).json({ error: "Invalid supervisor ID." });
       }
     }
+
+    // Prepare department data
+    const departmentData = {
+      name,
+      companyId,
+      paidBreak: Boolean(paidBreak), // Ensure boolean value, default to false if not provided
+    };
+
+    // Add supervisor if valid
+    if (supervisorId && supervisorId !== "none" && supervisorId !== "") {
+      departmentData.supervisorId = supervisorId;
+    }
+
+    // Create the department
     const newDepartment = await prisma.department.create({
-      data: {
-        name,
-        companyId,
-        supervisorId: supervisor ? supervisor.id : null,
-      },
+      data: departmentData,
+      include: {
+        supervisor: {
+          select: {
+            id: true,
+            email: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true
+              }
+            }
+          }
+        }
+      }
     });
-    return res.status(201).json({ data: newDepartment, message: "Department created successfully." });
+
+    return res.status(201).json({ 
+      data: newDepartment, 
+      message: "Department created successfully." 
+    });
+
   } catch (error) {
     console.error("Error in createDepartment:", error);
     return res.status(500).json({ error: "Internal server error." });
@@ -111,25 +154,38 @@ const getDepartmentById = async (req, res) => {
 const updateDepartment = async (req, res) => {
   try {
     const departmentId = req.params.id;
-    let { name, supervisorId } = req.body;
+    let { name, supervisorId, paidBreak } = req.body;
     const companyId = req.user.companyId;
+
     if (!departmentId) {
       return res.status(400).json({ error: "Invalid department ID." });
     }
-    const department = await prisma.department.findFirst({ where: { id: departmentId, companyId } });
+
+    const department = await prisma.department.findFirst({ 
+      where: { id: departmentId, companyId } 
+    });
+    
     if (!department) {
       return res.status(404).json({ error: "Department not found." });
     }
+
+    // Name validation (if name is being updated)
     if (name) {
-      name = name.trim().toLowerCase();
+      name = name.trim();
       const duplicateDept = await prisma.department.findFirst({
-        where: { companyId, name: { equals: name, mode: "insensitive" }, NOT: { id: departmentId } },
+        where: { 
+          companyId, 
+          name: { equals: name, mode: "insensitive" }, 
+          NOT: { id: departmentId } 
+        },
       });
       if (duplicateDept) {
         return res.status(409).json({ error: "Another department with this name exists." });
       }
     }
-    if (supervisorId !== undefined && supervisorId !== null) {
+
+    // Supervisor validation (if supervisor is being updated)
+    if (supervisorId !== undefined && supervisorId !== null && supervisorId !== "" && supervisorId !== "none") {
       const supervisor = await prisma.user.findFirst({
         where: { id: supervisorId, companyId, role: "supervisor" },
       });
@@ -137,14 +193,49 @@ const updateDepartment = async (req, res) => {
         return res.status(400).json({ error: "Invalid supervisor ID." });
       }
     }
+
+    // Prepare update data - only include fields that are being updated
+    const updateData = {};
+    
+    if (name !== undefined) {
+      updateData.name = name;
+    }
+    
+    if (supervisorId !== undefined) {
+      if (supervisorId === null || supervisorId === "" || supervisorId === "none") {
+        updateData.supervisorId = null;
+      } else {
+        updateData.supervisorId = supervisorId;
+      }
+    }
+    
+    if (paidBreak !== undefined) {
+      updateData.paidBreak = Boolean(paidBreak); // Ensure boolean value
+    }
+
     const updatedDepartment = await prisma.department.update({
       where: { id: departmentId },
-      data: {
-        name: name || department.name,
-        supervisorId: supervisorId !== undefined ? supervisorId : department.supervisorId,
-      },
+      data: updateData,
+      include: {
+        supervisor: {
+          select: {
+            id: true,
+            email: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true
+              }
+            }
+          }
+        }
+      }
     });
-    return res.status(200).json({ data: updatedDepartment, message: "Department updated successfully." });
+
+    return res.status(200).json({ 
+      data: updatedDepartment, 
+      message: "Department updated successfully." 
+    });
   } catch (error) {
     console.error("Error in updateDepartment:", error);
     return res.status(500).json({ error: "Internal server error." });

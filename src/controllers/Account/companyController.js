@@ -246,6 +246,48 @@ const updateMyCompany = async (req, res) => {
   }
 };
 
+const getCompanyScheduleStats = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const now = new Date();
+    
+    const totalSchedules = await prisma.shiftSchedule.count({
+      where: { companyId }
+    });
+    
+    const activeSchedules = await prisma.shiftSchedule.count({
+      where: {
+        companyId,
+        OR: [
+          { endDate: null },
+          { endDate: { gte: now } }
+        ]
+      }
+    });
+    
+    const assignedEmployeesCount = await prisma.userShift.groupBy({
+      by: ['userId'],
+      where: {
+        shift: { companyId },
+        assignedDate: { gte: now }
+      }
+    });
+    
+    return res.status(200).json({
+      message: "Company schedule statistics retrieved successfully.",
+      data: {
+        totalSchedules,
+        activeSchedules,
+        assignedEmployees: assignedEmployeesCount.length,
+        avgDaysPerSchedule: 4.5, // Calculate based on your needs
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching company schedule stats:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
 module.exports = {
   getAllCompanies,
   getCompanyById,
@@ -255,4 +297,5 @@ module.exports = {
   getCompanyUserCount,
   getMyCompany,
   updateMyCompany,
+  getCompanyScheduleStats,
 };

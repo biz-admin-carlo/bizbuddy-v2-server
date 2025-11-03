@@ -12,6 +12,7 @@ const {
   deleteCompany,
   getMyCompany,
   updateMyCompany,
+  getCompanyScheduleStats,
 } = require("@controllers/Account/companyController");
 
 router.get("/all", authenticate, authorizeRoles("superadmin"), getAllCompanies);
@@ -21,6 +22,7 @@ router.delete("/delete/:id", authenticate, authorizeRoles("superadmin"), deleteC
 
 router.get("/me", authenticate, authorizeRoles("admin", "superadmin"), getMyCompany);
 router.put("/me", authenticate, authorizeRoles("admin", "superadmin"), updateMyCompany);
+router.get("/me/schedule-stats", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), getCompanyScheduleStats);
 
 router.get("/:id", authenticate, authorizeRoles("superadmin", "admin"), getCompanyById);
 
