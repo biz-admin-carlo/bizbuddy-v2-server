@@ -492,6 +492,9 @@ model User {
   LeaveBalance        LeaveBalance[]
   AttendanceSummary   AttendanceSummary[]
 
+  requestedTimeLogs      RequestedTimeLog[] @relation("RequestedTimeLogUser")
+  approvedRequestedLogs  RequestedTimeLog[] @relation("RequestedTimeLogApprover")
+
   scheduleConflicts ScheduleConflict[]
   resolvedConflicts ScheduleConflict[] @relation("ConflictResolver")
   assignedSchedules ShiftSchedule[]
@@ -822,6 +825,37 @@ model TimeLog {
   user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   overtime Overtime[]
   contests ContestTimeLog[]
+  createdFromRequest     RequestedTimeLog[] @relation("CreatedFromRequest")
+
+}
+
+model RequestedTimeLog {
+  id                  String    @id @default(uuid())
+  userId              String
+  approverId          String?
+  requestedDate       DateTime
+  requestedClockIn    DateTime
+  requestedClockOut   DateTime
+  reason              String?
+  description         String?
+  estimatedDuration   Int?      // in minutes
+  estimatedNetHours   Float?    // in hours
+  status              String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  submittedAt         DateTime  @default(now())
+  approvedAt          DateTime?
+  rejectionReason     String?
+  createdTimeLogId    String?   // Link to created TimeLog if approved
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user                User      @relation("RequestedTimeLogUser", fields: [userId], references: [id], onDelete: Cascade)
+  approver            User?     @relation("RequestedTimeLogApprover", fields: [approverId], references: [id])
+  createdTimeLog      TimeLog?  @relation("CreatedFromRequest", fields: [createdTimeLogId], references: [id])
+
+  @@index([userId])
+  @@index([approverId])
+  @@index([status])
+  @@map("requested_time_logs")
 }
 
 model ContestTimeLog {

@@ -28,6 +28,7 @@ const employmentDetailRoutes = require("@routes/Features/employmentDetailRoutes"
 const accountDeletionRoutes = require("@routes/Features/accountDeletionRoutes");
 const conflictRoutes = require("@routes/Features/conflictRoutes");
 const contestPolicyRoutes = require("@routes/Features/contestPolicyRoutes");
+const requestPunchRoutes = require("@routes/Features/requestPunchLogRoutes");
 
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
@@ -54,6 +55,7 @@ router.use("/employment-details", employmentDetailRoutes);
 router.use("/account-deletion", accountDeletionRoutes);
 router.use("/conflicts", conflictRoutes);
 router.use("/contest-policy", contestPolicyRoutes);
+router.use("/request-punch-log", requestPunchRoutes);
 
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
