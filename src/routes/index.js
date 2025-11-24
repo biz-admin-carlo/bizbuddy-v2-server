@@ -57,6 +57,10 @@ router.use("/conflicts", conflictRoutes);
 router.use("/contest-policy", contestPolicyRoutes);
 router.use("/request-punch-log", requestPunchRoutes);
 
+const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
+
+router.use("/test/payroll-system", payrollSystemRoutes);
+
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
 });
