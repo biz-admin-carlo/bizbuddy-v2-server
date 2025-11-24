@@ -55,6 +55,10 @@ router.use("/account-deletion", accountDeletionRoutes);
 router.use("/conflicts", conflictRoutes);
 router.use("/contest-policy", contestPolicyRoutes);
 
+const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
+
+router.use("/test/payroll-system", payrollSystemRoutes);
+
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
 });
