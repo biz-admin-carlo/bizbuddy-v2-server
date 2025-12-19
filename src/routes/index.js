@@ -67,6 +67,10 @@ router.use("/company-information", companyInformationRoutes);
 router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
 router.use("/cutoff-periods", cutOffDetailsRoutes);
 
+const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
+
+router.use("/test/payroll-system", payrollSystemRoutes);
+
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
 });
