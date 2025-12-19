@@ -29,6 +29,11 @@ const accountDeletionRoutes = require("@routes/Features/accountDeletionRoutes");
 const conflictRoutes = require("@routes/Features/conflictRoutes");
 const contestPolicyRoutes = require("@routes/Features/contestPolicyRoutes");
 const requestPunchRoutes = require("@routes/Features/requestPunchLogRoutes");
+const companyInformationRoutes = require("@routes/PayrollSystem/companyInformationRoutes");
+const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
+const employeePayrollDetailsRoutes = require("@routes/PayrollSystem/employeePayrollDetailsRoutes");
+const cutOffDetailsRoutes = require("@routes/Features/cutoffPeriodRoutes");
+
 
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
@@ -56,12 +61,6 @@ router.use("/account-deletion", accountDeletionRoutes);
 router.use("/conflicts", conflictRoutes);
 router.use("/contest-policy", contestPolicyRoutes);
 router.use("/request-punch-log", requestPunchRoutes);
-
-const companyInformationRoutes = require("@routes/PayrollSystem/companyInformationRoutes");
-const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
-const employeePayrollDetailsRoutes = require("@routes/PayrollSystem/employeePayrollDetailsRoutes");
-const cutOffDetailsRoutes = require("@routes/Features/cutoffPeriodRoutes");
-
 router.use("/test/payroll-system", payrollSystemRoutes);
 router.use("/company-information", companyInformationRoutes);
 router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
