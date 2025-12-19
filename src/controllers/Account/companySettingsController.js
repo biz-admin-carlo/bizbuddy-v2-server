@@ -41,6 +41,7 @@ exports.updateSettings = async (req, res) => {
     const {
       defaultShiftHours,
       minimumLunchMinutes,
+      gracePeriodMinutes,
       country,
       currency,
       language,
@@ -60,6 +61,13 @@ exports.updateSettings = async (req, res) => {
               ? null
               : Number(minimumLunchMinutes) || 0,
         }),
+        // ✅ NEW: Grace period update logic
+        ...(gracePeriodMinutes !== undefined && {
+          gracePeriodMinutes:
+            gracePeriodMinutes === null
+              ? 15  // Default to 15 if set to null
+              : Number(gracePeriodMinutes) || 15,
+        }),
         ...(timeZone !== undefined && { timeZone }),
         country,
         currency,
@@ -69,13 +77,15 @@ exports.updateSettings = async (req, res) => {
         id: true,
         defaultShiftHours: true,
         minimumLunchMinutes: true,
+        gracePeriodMinutes: true,  
         country: true,
         currency: true,
         language: true,
         timeZone: true,
       },
     });
-    console.log(updated);
+    
+    console.log('[✅ Company settings updated]', updated);
     res.json({ data: updated });
   } catch (e) {
     console.error("updateSettings error:", e);
