@@ -31,6 +31,7 @@
     "firebase-admin": "^13.5.0",
     "jsonwebtoken": "^9.0.2",
     "module-alias": "^2.2.3",
+    "moment-timezone": "^0.6.0",
     "node-cron": "^3.0.3",
     "nodemailer": "^7.0.9",
     "pg": "^8.13.1",

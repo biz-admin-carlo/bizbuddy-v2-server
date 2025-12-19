@@ -167,19 +167,72 @@ const signOut = (req, res) => {
 const updateProfile = async (req, res) => {
   try {
     const { id: userId, companyId } = req.user;
-    let { username, email, firstName, lastName, phoneNumber } = req.body;
+    let {
+      username,
+      email,
+      firstName,
+      lastName,
+      phoneNumber,
+      ssnItin,
+      dateOfBirth,
+      addressLine,
+      city,
+      state,
+      postalCode,
+      emergencyContactName,
+      emergencyContactPhone,
+    } = req.body;
+
+    console.log(req.body);
+
+    // ============================================
+    // REQUIRED FIELD VALIDATION
+    // ============================================
     if (!username || !email) {
       return res
         .status(400)
         .json({ message: "Username and email are required." });
     }
+
     const normalizedUsername = username.trim().toLowerCase();
     const normalizedEmail = email.trim().toLowerCase();
-    if (!/^[a-z0-9]+$/i.test(normalizedUsername)) {
+
+    // ============================================
+    // USERNAME VALIDATION
+    // Must start and end with alphanumeric
+    // Allows . and _ in the middle
+    // Minimum 3 characters
+    // ============================================
+    if (normalizedUsername.length < 3) {
       return res
         .status(400)
-        .json({ message: "Username must be alphanumeric." });
+        .json({ message: "Username must be at least 3 characters." });
     }
+
+    if (!/^[a-z0-9]([a-z0-9._]*[a-z0-9])?$/i.test(normalizedUsername)) {
+      return res.status(400).json({
+        message:
+          "Username must start and end with a letter or number. Only letters, numbers, periods (.) and underscores (_) are allowed.",
+      });
+    }
+
+    // Check for consecutive special characters
+    if (/[._]{2,}/.test(normalizedUsername)) {
+      return res.status(400).json({
+        message: "Username cannot contain consecutive periods or underscores.",
+      });
+    }
+
+    // ============================================
+    // EMAIL VALIDATION
+    // ============================================
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({ message: "Please enter a valid email address." });
+    }
+
+    // ============================================
+    // DUPLICATE USERNAME CHECK
+    // ============================================
     const duplicateUsername = await prisma.user.findFirst({
       where: {
         username: { equals: normalizedUsername, mode: "insensitive" },
@@ -189,6 +242,10 @@ const updateProfile = async (req, res) => {
     if (duplicateUsername) {
       return res.status(400).json({ message: "Username is already taken." });
     }
+
+    // ============================================
+    // DUPLICATE EMAIL CHECK (within company)
+    // ============================================
     const duplicateEmail = await prisma.user.findFirst({
       where: {
         companyId,
@@ -201,6 +258,52 @@ const updateProfile = async (req, res) => {
         .status(400)
         .json({ message: "Email already exists within the company." });
     }
+
+    // ============================================
+    // SSN/ITIN VALIDATION & DUPLICATE CHECK
+    // ============================================
+    let normalizedSsnItin = null;
+    if (ssnItin && ssnItin.trim()) {
+      normalizedSsnItin = ssnItin.trim();
+
+      // Validate SSN format (XXX-XX-XXXX or similar with dashes)
+      // Allow 9-15 characters including dashes
+      if (normalizedSsnItin.length < 9 || normalizedSsnItin.length > 15) {
+        return res.status(400).json({
+          message: "SSN/ITIN must be between 9 and 15 characters.",
+        });
+      }
+
+      // Check for duplicate SSN/ITIN
+      const duplicateSsn = await prisma.userProfile.findFirst({
+        where: {
+          ssnItin: normalizedSsnItin,
+          NOT: { userId },
+        },
+      });
+      if (duplicateSsn) {
+        return res.status(400).json({
+          message: "SSN/ITIN is already associated with another employee.",
+        });
+      }
+    }
+
+    // ============================================
+    // DATE OF BIRTH VALIDATION
+    // ============================================
+    let parsedDateOfBirth = null;
+    if (dateOfBirth && dateOfBirth.trim()) {
+      parsedDateOfBirth = new Date(dateOfBirth);
+      if (isNaN(parsedDateOfBirth.getTime())) {
+        return res.status(400).json({
+          message: "Please enter a valid date of birth.",
+        });
+      }
+    }
+
+    // ============================================
+    // UPDATE USER TABLE
+    // ============================================
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
@@ -209,31 +312,56 @@ const updateProfile = async (req, res) => {
         updatedAt: new Date(),
       },
     });
+
+    // ============================================
+    // UPSERT USER PROFILE
+    // ============================================
+    const profileData = {
+      firstName: firstName?.trim() || null,
+      lastName: lastName?.trim() || null,
+      phoneNumber: phoneNumber?.trim() || null,
+      ssnItin: normalizedSsnItin,
+      dateOfBirth: parsedDateOfBirth,
+      addressLine: addressLine?.trim() || null,
+      city: city?.trim() || null,
+      state: state?.trim() || null,
+      postalCode: postalCode?.trim() || null,
+      emergencyContactName: emergencyContactName?.trim() || null,
+      emergencyContactPhone: emergencyContactPhone?.trim() || null,
+      email: normalizedEmail,
+      username: normalizedUsername,
+      updatedAt: new Date(),
+    };
+
     const updatedProfile = await prisma.userProfile.upsert({
       where: { userId },
-      update: {
-        firstName,
-        lastName,
-        phoneNumber,
-        updatedAt: new Date(),
-        email: normalizedEmail,
-        username: normalizedUsername,
-      },
+      update: profileData,
       create: {
         userId,
-        firstName,
-        lastName,
-        phoneNumber,
-        email: normalizedEmail,
-        username: normalizedUsername,
+        ...profileData,
       },
     });
+
     return res.status(200).json({
       message: "Profile updated successfully.",
       data: { user: updatedUser, profile: updatedProfile },
     });
   } catch (error) {
     console.error("Error in updateProfile:", error);
+
+    // Handle Prisma unique constraint errors
+    if (error.code === "P2002") {
+      const field = error.meta?.target?.[0];
+      if (field === "username") {
+        return res.status(400).json({ message: "Username is already taken." });
+      }
+      if (field === "ssnItin") {
+        return res.status(400).json({
+          message: "SSN/ITIN is already associated with another employee.",
+        });
+      }
+    }
+
     return res.status(500).json({ message: "Internal server error." });
   }
 };

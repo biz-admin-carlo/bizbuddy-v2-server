@@ -57,6 +57,20 @@ router.use("/conflicts", conflictRoutes);
 router.use("/contest-policy", contestPolicyRoutes);
 router.use("/request-punch-log", requestPunchRoutes);
 
+const companyInformationRoutes = require("@routes/PayrollSystem/companyInformationRoutes");
+const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
+const employeePayrollDetailsRoutes = require("@routes/PayrollSystem/employeePayrollDetailsRoutes");
+const cutOffDetailsRoutes = require("@routes/Features/cutoffPeriodRoutes");
+
+router.use("/test/payroll-system", payrollSystemRoutes);
+router.use("/company-information", companyInformationRoutes);
+router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
+router.use("/cutoff-periods", cutOffDetailsRoutes);
+
+const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
+
+router.use("/test/payroll-system", payrollSystemRoutes);
+
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
 });

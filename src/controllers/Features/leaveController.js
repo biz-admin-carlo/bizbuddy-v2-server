@@ -1,4 +1,5 @@
 // src/controllers/Features/leaveController.js
+// Alternative approach without schema changes - manually fetch leave policies
 
 const { prisma } = require("@config/connection");
 const { calcRequestedHours } = require("@utils/leaveUtils");
@@ -19,6 +20,7 @@ const submitLeaveRequest = async (req, res) => {
     return res
       .status(400)
       .json({ message: "From Date cannot be after To Date." });
+  
   const approver = await prisma.user.findFirst({
     where: {
       id: approverId,
@@ -32,11 +34,23 @@ const submitLeaveRequest = async (req, res) => {
     return res
       .status(400)
       .json({ message: "Cannot set yourself as approver." });
+
+  // FIX: Find the policy by leave type name to get its ID
+  const policy = await prisma.leavePolicy.findFirst({
+    where: {
+      companyId: req.user.companyId,
+      leaveType: type, // type is the name like "Personal Leave"
+    },
+  });
+  if (!policy)
+    return res.status(400).json({ message: "Leave policy not found for this type." });
+
+  // Store the policy ID, not the type name
   const data = await prisma.leave.create({
     data: {
       userId: req.user.id,
       approverId: approver.id,
-      leaveType: type,
+      leaveType: policy.id, // ✅ Store the policy ID
       startDate: new Date(fromDate).toISOString(),
       endDate: new Date(toDate).toISOString(),
       status: "pending",
@@ -62,8 +76,23 @@ const getUserLeaves = async (req, res) => {
     },
     orderBy: { startDate: "desc" },
   });
+
+  // Fetch all unique leave policy IDs
+  const policyIds = [...new Set(leaves.map(l => l.leaveType).filter(Boolean))];
+  const policies = await prisma.leavePolicy.findMany({
+    where: { id: { in: policyIds } },
+    select: { id: true, leaveType: true },
+  });
+
+  // Create a map for quick lookup
+  const policyMap = {};
+  policies.forEach(p => {
+    policyMap[p.id] = p.leaveType;
+  });
+
   const data = leaves.map((l) => ({
     ..._format(l),
+    leaveType: policyMap[l.leaveType] || l.leaveType, // Replace ID with actual name
     approver: l.approver
       ? {
           ...l.approver,
@@ -78,6 +107,7 @@ const getUserLeaves = async (req, res) => {
   res.json({ data });
 };
 
+// FIXED: Manually fetch leave policy names
 const getPendingLeavesForApprover = async (req, res) => {
   const leaves = await prisma.leave.findMany({
     where: { approverId: req.user.id, status: "pending" },
@@ -94,8 +124,23 @@ const getPendingLeavesForApprover = async (req, res) => {
     },
     orderBy: { createdAt: "desc" },
   });
+
+  // Fetch all unique leave policy IDs
+  const policyIds = [...new Set(leaves.map(l => l.leaveType).filter(Boolean))];
+  const policies = await prisma.leavePolicy.findMany({
+    where: { id: { in: policyIds } },
+    select: { id: true, leaveType: true },
+  });
+
+  // Create a map for quick lookup
+  const policyMap = {};
+  policies.forEach(p => {
+    policyMap[p.id] = p.leaveType;
+  });
+
   const data = leaves.map((l) => ({
     ..._format(l),
+    leaveType: policyMap[l.leaveType] || l.leaveType, // Replace ID with actual name
     requester: l.User
       ? {
           ...l.User,
@@ -113,42 +158,108 @@ const getPendingLeavesForApprover = async (req, res) => {
 const approveLeave = async (req, res) => {
   const leaveId = req.params.id;
   const { approverComments } = req.body;
+  
+  // Step 1: Find the leave request
   const leave = await prisma.leave.findFirst({
     where: { id: leaveId, approverId: req.user.id, status: "pending" },
   });
-  if (!leave)
+  
+  if (!leave) {
+    console.error(`Leave not found: ${leaveId}, approver: ${req.user.id}`);
     return res
       .status(404)
       .json({ message: "Leave request not found or already processed." });
-  const policy = await prisma.leavePolicy.findFirst({
-    where: { companyId: req.user.companyId, leaveType: leave.leaveType },
+  }
+
+  console.log(`Processing leave approval:`, {
+    leaveId: leave.id,
+    leaveType: leave.leaveType,
+    userId: leave.userId,
   });
-  if (!policy)
-    return res.status(400).json({ message: "Leave policy not configured." });
+
+  // Step 2: Find the policy - handle both ID and name
+  let policy = await prisma.leavePolicy.findFirst({
+    where: { id: leave.leaveType },
+  });
+
+  // If not found by ID, try finding by name (for legacy data)
+  if (!policy) {
+    console.warn(`Policy not found by ID "${leave.leaveType}", trying by name...`);
+    policy = await prisma.leavePolicy.findFirst({
+      where: {
+        companyId: req.user.companyId,
+        leaveType: leave.leaveType,
+      },
+    });
+  }
+
+  if (!policy) {
+    console.error(`Policy not found for leaveType: "${leave.leaveType}"`);
+    return res.status(400).json({ 
+      message: "Leave policy not configured.",
+      debug: {
+        leaveType: leave.leaveType,
+        companyId: req.user.companyId,
+      }
+    });
+  }
+
+  console.log(`Found policy:`, {
+    policyId: policy.id,
+    policyType: policy.leaveType,
+  });
+
+  // Step 3: Calculate requested hours
   const requestedHours = await calcRequestedHours(
     leave.userId,
     leave.startDate,
     leave.endDate
   );
+
+  console.log(`Requested hours: ${requestedHours}`);
+
+  // Step 4: Check/create balance
   const bal = await prisma.leaveBalance.upsert({
     where: { userId_policyId: { userId: leave.userId, policyId: policy.id } },
     update: {},
     create: { userId: leave.userId, policyId: policy.id, balanceHours: 0 },
   });
-  if (!policy.negativeAllowed && Number(bal.balanceHours) < requestedHours)
-    return res
-      .status(400)
-      .json({
-        message: `Insufficient leave balance (${bal.balanceHours} h left, need ${requestedHours} h).`,
-      });
+
+  console.log(`Current balance:`, {
+    balanceHours: bal.balanceHours,
+    requestedHours: requestedHours,
+    negativeAllowed: policy.negativeAllowed,
+  });
+
+  // Step 5: Check if sufficient balance
+  if (!policy.negativeAllowed && Number(bal.balanceHours) < requestedHours) {
+    console.error(`Insufficient balance: ${bal.balanceHours}h available, ${requestedHours}h needed`);
+    return res.status(400).json({
+      message: `Insufficient leave balance (${bal.balanceHours} h left, need ${requestedHours} h).`,
+      debug: {
+        available: bal.balanceHours,
+        requested: requestedHours,
+        leaveType: policy.leaveType,
+      }
+    });
+  }
+
+  // Step 6: Deduct balance
   await prisma.leaveBalance.update({
     where: { id: bal.id },
     data: { balanceHours: { decrement: requestedHours } },
   });
+
+  console.log(`Balance updated: ${Number(bal.balanceHours) - requestedHours}h remaining`);
+
+  // Step 7: Approve the leave
   const data = await prisma.leave.update({
     where: { id: leaveId },
     data: { status: "approved", approverComments },
   });
+
+  console.log(`Leave approved: ${leaveId}`);
+
   res.json({ data: _format(data) });
 };
 
@@ -204,6 +315,7 @@ const deleteLeave = async (req, res) => {
   res.json({ message: "deleted" });
 };
 
+// FIXED: Manually fetch leave policy names
 const getLeavesForApprover = async (req, res) => {
   const { status } = req.query;
   if (
@@ -213,6 +325,7 @@ const getLeavesForApprover = async (req, res) => {
     return res.status(400).json({ message: "Invalid status filter." });
   const where = { approverId: req.user.id };
   if (status) where.status = status.toLowerCase();
+  
   const leaves = await prisma.leave.findMany({
     where,
     include: {
@@ -228,8 +341,23 @@ const getLeavesForApprover = async (req, res) => {
     },
     orderBy: { startDate: "desc" },
   });
+
+  // Fetch all unique leave policy IDs
+  const policyIds = [...new Set(leaves.map(l => l.leaveType).filter(Boolean))];
+  const policies = await prisma.leavePolicy.findMany({
+    where: { id: { in: policyIds } },
+    select: { id: true, leaveType: true },
+  });
+
+  // Create a map for quick lookup
+  const policyMap = {};
+  policies.forEach(p => {
+    policyMap[p.id] = p.leaveType;
+  });
+
   const data = leaves.map((l) => ({
     ..._format(l),
+    leaveType: policyMap[l.leaveType] || l.leaveType, // Replace ID with actual name
     requester: l.User
       ? {
           ...l.User,
