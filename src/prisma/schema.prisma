@@ -744,7 +744,7 @@ model CutoffPeriod {
 model TimeLogApproval {
   id              String       @id @default(cuid())
   timeLogId       String       @unique
-  cutoffPeriodId  String
+  cutoffPeriodId String?
   status          String       @default("pending") // "pending", "approved", "rejected"
   approvedBy      String?
   approvedAt      DateTime?    @db.Timestamptz(6)
@@ -752,7 +752,7 @@ model TimeLogApproval {
   editedHours     Decimal?     @db.Decimal(5, 2) // If admin adjusted hours
   
   timeLog         TimeLog      @relation(fields: [timeLogId], references: [id], onDelete: Cascade)
-  cutoffPeriod    CutoffPeriod @relation(fields: [cutoffPeriodId], references: [id], onDelete: Cascade)
+  cutoffPeriod    CutoffPeriod? @relation(fields: [cutoffPeriodId], references: [id], onDelete: Cascade)
   approver        User?        @relation(fields: [approvedBy], references: [id])
   
   createdAt       DateTime     @default(now())
