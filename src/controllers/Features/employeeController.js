@@ -141,7 +141,12 @@ const createEmployee = async (req, res) => {
 const updateEmployee = async (req, res) => {
   try {
     const id = req.params.id;
-    let { email, password, role, firstName, lastName, phone, status, companyId, departmentId, hireDate, employeeId } = req.body;
+    let { 
+      email, password, role, firstName, lastName, phone, status, 
+      companyId, departmentId, hireDate, employeeId, 
+      jobTitle, employmentStatus, exemptStatus, employmentType, 
+      workLocation, probationEndDate, timeZone 
+    } = req.body;
 
     const employee = await prisma.user.findFirst({
       where: { id, companyId: req.user.companyId },
@@ -244,6 +249,35 @@ const updateEmployee = async (req, res) => {
     if (lastName) profileData.lastName = lastName.trim();
     if (phone !== undefined) profileData.phoneNumber = phone ? phone.trim() : null;
 
+    // Build employment detail data
+    const employmentDetailData = {};
+    if (jobTitle !== undefined) employmentDetailData.jobTitle = jobTitle ? jobTitle.trim() : null;
+    if (employmentStatus !== undefined && employmentStatus !== 'none') {
+      employmentDetailData.employmentStatus = employmentStatus;
+    }
+    if (exemptStatus !== undefined && exemptStatus !== 'none') {
+      employmentDetailData.exemptStatus = exemptStatus;
+    }
+    if (employmentType !== undefined && employmentType !== 'none') {
+      employmentDetailData.employmentType = employmentType;
+    }
+    if (workLocation !== undefined && workLocation !== 'none') {
+      employmentDetailData.workLocation = workLocation;
+    }
+    if (probationEndDate !== undefined) {
+      if (probationEndDate === null || probationEndDate === '') {
+        employmentDetailData.probationEndDate = null;
+      } else {
+        const parsedDate = new Date(probationEndDate);
+        if (!isNaN(parsedDate.getTime())) {
+          employmentDetailData.probationEndDate = parsedDate;
+        }
+      }
+    }
+    if (timeZone !== undefined) {
+      employmentDetailData.timeZone = timeZone ? timeZone.trim() : null;
+    }
+
     const updatedEmployee = await prisma.user.update({
       where: { id },
       data: {
@@ -256,6 +290,14 @@ const updateEmployee = async (req, res) => {
                 username: userData.username || employee.username,
               },
             }
+          : undefined,
+        employmentDetail: Object.keys(employmentDetailData).length
+          ? {
+            upsert: {
+              create: employmentDetailData,
+              update: employmentDetailData,
+            },
+          }
           : undefined,
       },
       select: {
@@ -271,6 +313,7 @@ const updateEmployee = async (req, res) => {
         profile: { select: { firstName: true, lastName: true, phoneNumber: true, username: true } },
         company: { select: { id: true, name: true } },
         department: { select: { id: true, name: true } },
+        employmentDetail: true,
       },
     });
 

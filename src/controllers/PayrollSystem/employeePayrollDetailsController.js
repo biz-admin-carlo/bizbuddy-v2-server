@@ -454,6 +454,7 @@ exports.getAllEmployeesWithPayrollDetails = async (req, res) => {
             lastName: true,
           },
         },
+        employmentDetail: true,
         payrollDetails: {
           include: {
             earningRates: {
@@ -528,7 +529,7 @@ exports.getAllEmployeesWithPayrollDetails = async (req, res) => {
         id: emp.id,
         name: fullName,
         email: emp.email,
-        position: emp.employmentDetail?.position || 'No position',
+        position: emp.employmentDetail?.jobTitle || 'No position',
         status: emp.employmentDetail?.status || 'Active',
         payrollDetails: {
           maritalStatus: payrollDetails.maritalStatus,

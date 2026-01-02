@@ -229,13 +229,6 @@ exports.savePayrollRun = async (req, res) => {
       },
     });
 
-    console.log('✅ Payroll Run Saved:', {
-      id: payrollRun.id,
-      period: `${periodStart} to ${periodEnd}`,
-      employees: employees.length,
-      totalNet: totals.netPay,
-    });
-
     return res.status(201).json({
       success: true,
       message: 'Payroll saved successfully',
@@ -493,7 +486,7 @@ exports.getUnviewedReportsCount = async (req, res) => {
 
 exports.generatePayslipPDF = async (req, res) => {
   try {
-    const { payrollRunId, employeeId } = req.params;
+    const { payrollRunId, employeeId } = req.params; 
     const { companyId } = req.user;
 
     const payrollRun = await prisma.payrollRun.findFirst({
@@ -510,7 +503,7 @@ exports.generatePayslipPDF = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Payroll run not found' });
     }
 
-    const employee = payrollRun.payrollSnapshot.employees.find(e => e.employeeId === employeeId);
+    const employee = payrollRun.payrollSnapshot.employees.find(e => e.employeeId === employeeId); 
     
     if (!employee) {
       return res.status(404).json({ success: false, message: 'Employee not found' });
@@ -521,16 +514,13 @@ exports.generatePayslipPDF = async (req, res) => {
       select: { name: true, addressLine1: true, city: true, state: true, postalCode: true },
     });
 
-    // ✅ FIX: Get earning/deduction types from snapshot
     const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
     const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
 
-    // Generate PDF with labels
     const pdfBuffer = await generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes);
 
-    // ✅ FIX: Better filename
     const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-    const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0]; // YYYY-MM-DD
+    const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0];
     const endDate = new Date(payrollRun.periodEnd).toISOString().split('T')[0];
     const filename = `Payslip_${cleanName}_${startDate}_to_${endDate}.pdf`;
 
@@ -541,5 +531,169 @@ exports.generatePayslipPDF = async (req, res) => {
   } catch (error) {
     console.error('❌ Error generating payslip:', error);
     res.status(500).json({ success: false, message: 'Failed to generate payslip' });
+  }
+};
+
+exports.getMyPayslips = async (req, res) => {
+  try {
+    const userId = req.user.userId || req.user.id;
+    const { companyId } = req.user;
+
+    const payrollRuns = await prisma.payrollRun.findMany({
+      where: {
+        companyId,
+        locked: true,
+      },
+      select: {
+        id: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+        payrollSnapshot: true,
+      },
+      orderBy: {
+        periodEnd: 'desc',
+      },
+    });
+
+
+    const myPayslips = payrollRuns
+      .map(run => {
+        const employee = run.payrollSnapshot.employees.find(e => {
+          return e.employeeId === userId;
+        });
+        
+        if (!employee) {
+          console.log('❌ Employee not found in this run');
+          return null;
+        }
+
+        return {
+          id: run.id,
+          payrollRunId: run.id,
+          payDate: run.payDate,
+          periodStart: run.periodStart,
+          checkNumber: employee.checkNumber,
+          periodEnd: run.periodEnd,
+          grossPay: employee.grossPay,
+          taxes: employee.totalTaxes,
+          deductions: employee.totalDeductions,
+          netPay: employee.netPay,
+        };
+      })
+      .filter(Boolean);
+
+    return res.status(200).json({
+      success: true,
+      data: { payslips: myPayslips },
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching payslips:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payslips',
+    });
+  }
+};
+
+exports.getMyPayslipPDF = async (req, res) => {
+  try {
+    const { payrollRunId } = req.params;
+    const userId = req.user.userId || req.user.id; // ✅ From token
+    const { companyId } = req.user;
+
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: { id: payrollRunId, companyId },
+      select: {
+        payrollSnapshot: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+      },
+    });
+
+    if (!payrollRun) {
+      return res.status(404).json({ success: false, message: 'Payroll run not found' });
+    }
+
+    const employee = payrollRun.payrollSnapshot.employees.find(e => e.employeeId === userId);
+    
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'You are not in this payroll run' });
+    }
+
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { name: true, addressLine1: true },
+    });
+
+    const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
+    const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
+
+    const pdfBuffer = await generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes);
+
+    const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0];
+    const endDate = new Date(payrollRun.periodEnd).toISOString().split('T')[0];
+    const filename = `Payslip_${cleanName}_${startDate}_to_${endDate}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(pdfBuffer);
+
+  } catch (error) {
+    console.error('❌ Error generating payslip:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate payslip' });
+  }
+};
+
+exports.getSuggestedCheckNumber = async (req, res) => {
+  try {
+    const { companyId } = req.user;
+
+    // Get the most recent finalized payroll
+    const lastPayroll = await prisma.payrollRun.findFirst({
+      where: {
+        companyId,
+        locked: true,
+      },
+      select: {
+        checkNumberStart: true,
+        payrollSnapshot: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    if (!lastPayroll) {
+      // No previous payroll, suggest starting at 1001
+      return res.status(200).json({
+        success: true,
+        data: { suggestedCheckNumber: '1001' },
+      });
+    }
+
+    // Calculate next check number
+    const lastCheckStart = parseInt(lastPayroll.checkNumberStart) || 1000;
+    const employeeCount = lastPayroll.payrollSnapshot?.employees?.length || 0;
+    const nextCheckNumber = lastCheckStart + employeeCount;
+
+    return res.status(200).json({
+      success: true,
+      data: { 
+        suggestedCheckNumber: nextCheckNumber.toString(),
+        lastCheckStart: lastCheckStart.toString(),
+        lastEmployeeCount: employeeCount,
+      },
+    });
+
+  } catch (error) {
+    console.error('Error getting suggested check number:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get suggested check number',
+    });
   }
 };
