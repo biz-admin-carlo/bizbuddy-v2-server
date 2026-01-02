@@ -140,12 +140,24 @@ model PayrollRun {
   notes       String?
   createdAt   DateTime         @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime         @updatedAt @db.Timestamptz(6)
+  
+  payDate            DateTime?  @db.Timestamptz(6)
+  checkNumberStart   String?
+  payrollSnapshot    Json?
+  locked             Boolean    @default(false)
+  savedBy            String?
+  savedAt            DateTime?  @db.Timestamptz(6)
+  totalTaxes         Decimal    @default(0) @db.Decimal(14, 2)
+  totalDeductions    Decimal    @default(0) @db.Decimal(14, 2)
+  
   entries     PayrollEntry[]
   company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   schedule    PaySchedule?     @relation(fields: [scheduleId], references: [id])
 
   @@unique([companyId, periodStart, periodEnd])
   @@index([companyId, periodStart, periodEnd])
+  @@index([companyId, status])
+  @@index([locked])
 }
 
 model PayrollEntry {
