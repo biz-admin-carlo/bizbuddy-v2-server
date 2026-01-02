@@ -61,7 +61,7 @@ router.use("/account-deletion", accountDeletionRoutes);
 router.use("/conflicts", conflictRoutes);
 router.use("/contest-policy", contestPolicyRoutes);
 router.use("/request-punch-log", requestPunchRoutes);
-router.use("/test/payroll-system", payrollSystemRoutes);
+router.use("/payroll-system", payrollSystemRoutes);
 router.use("/company-information", companyInformationRoutes);
 router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
 router.use("/cutoff-periods", cutOffDetailsRoutes);

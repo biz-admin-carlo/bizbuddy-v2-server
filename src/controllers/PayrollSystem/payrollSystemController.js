@@ -1,6 +1,7 @@
 // src/controllers/PayrollSystem/payrollSystemController.js
 
 const { prisma } = require("@config/connection");
+const generatePayslipPDF = require('@utils/generatePayslipPDF');
 
 exports.getEmployeeList = async (req, res) => {
   try {
@@ -17,9 +18,9 @@ exports.getEmployeeList = async (req, res) => {
     const users = await prisma.user.findMany({
       where: {
         companyId: companyId,
-        role: {
-          in: ['employee', 'supervisor', 'admin'] // Exclude superadmin
-        }
+        // role: {
+        //   in: ['employee', 'supervisor', 'admin'] // Exclude superadmin
+        // }
       },
       include: {
         profile: {
@@ -113,398 +114,432 @@ exports.getEmployeeList = async (req, res) => {
   }
 };
 
-exports.generatePayrollPDF = async (req, res) => {
+exports.savePayrollRun = async (req, res) => {
   try {
-    const { payrollData, dateRange, employees, earningTypes, deductionTypes, checkNumber } = req.body;
-    const companyId = req.user.companyId;
+    const { companyId, userId } = req.user;
+    const {
+      payDate,
+      periodStart,
+      periodEnd,
+      checkNumberStart,
+      employees,
+      earningTypes,
+      deductionTypes,
+      totals,
+      hoursData,
+    } = req.body;
 
-    // Fetch company info
-    const company = await prisma.company.findUnique({
-      where: { id: companyId },
-      select: {
-        name: true,
-        addressLine1: true,
-        city: true,
-        state: true,
-        postalCode: true,
-        businessEmail: true,
-        phoneNumber: true,
-        gracePeriodMinutes: true,
+    // Validation
+    if (!payDate || !periodStart || !periodEnd || !employees || employees.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields (payDate, periodStart, periodEnd, employees)' 
+      });
+    }
+
+    // Check for duplicate period
+    const existingRun = await prisma.payrollRun.findFirst({
+      where: {
+        companyId,
+        periodStart: new Date(periodStart),
+        periodEnd: new Date(periodEnd),
+        locked: true,
       },
     });
 
-    // Helper function to parse decimal
-    const parseDecimal = (value) => {
-      if (!value || value === '') return 0;
-      const parsed = parseFloat(value.toString().replace(/,/g, ''));
-      return isNaN(parsed) ? 0 : parsed;
-    };
-
-    const round2 = (num) => Math.round(num * 100) / 100;
-
-    // Calculate earnings and deductions for each employee
-    const processedEmployees = employees.map(emp => {
-      const empData = payrollData[emp.userId] || { earnings: {}, deductions: {} };
-      
-      let grossEarnings = 0;
-      const earningsDetail = [];
-
-      // Process earnings
-      earningTypes.forEach(et => {
-        const value = parseDecimal(empData.earnings[et.id]);
-        if (value > 0) {
-          grossEarnings += value;
-          earningsDetail.push({
-            label: et.label,
-            value: value,
-            type: et.calculationType,
-          });
-        }
+    if (existingRun) {
+      return res.status(409).json({
+        success: false,
+        message: 'Payroll for this period has already been saved and locked.',
+        data: { payrollRunId: existingRun.id },
       });
-
-      let totalDeductions = 0;
-      const deductionsDetail = [];
-
-      // Process deductions
-      deductionTypes.forEach(dt => {
-        const value = parseDecimal(empData.deductions[dt.id]);
-        if (value > 0) {
-          totalDeductions += value;
-          deductionsDetail.push({
-            label: dt.label,
-            value: value,
-            isPreTax: dt.isPreTax,
-          });
-        }
-      });
-
-      const netPay = round2(grossEarnings - totalDeductions);
-
-      return {
-        name: emp.employeeName,
-        position: emp.position || 'N/A',
-        payType: emp.payType,
-        grossEarnings: round2(grossEarnings),
-        totalDeductions: round2(totalDeductions),
-        netPay: netPay,
-        earningsDetail,
-        deductionsDetail,
-        regularHours: parseDecimal(empData.earnings[earningTypes.find(et => et.code === 'regular_hours')?.id]),
-        overtimeHours: parseDecimal(empData.earnings[earningTypes.find(et => et.code === 'overtime')?.id]),
-      };
-    }).filter(emp => emp.grossEarnings > 0); // Only include employees with earnings
-
-    // Calculate totals
-    const totals = {
-      totalEmployees: processedEmployees.length,
-      totalGross: round2(processedEmployees.reduce((sum, emp) => sum + emp.grossEarnings, 0)),
-      totalDeductions: round2(processedEmployees.reduce((sum, emp) => sum + emp.totalDeductions, 0)),
-      totalNet: round2(processedEmployees.reduce((sum, emp) => sum + emp.netPay, 0)),
-      totalRegularHours: round2(processedEmployees.reduce((sum, emp) => sum + emp.regularHours, 0)),
-      totalOvertimeHours: round2(processedEmployees.reduce((sum, emp) => sum + emp.overtimeHours, 0)),
-    };
-
-    // ═══════════════════════════════════════════════════════
-    // CREATE PDF
-    // ═══════════════════════════════════════════════════════
-    const doc = new PDFDocument({ 
-      size: 'A4', 
-      margin: 50,
-      info: {
-        Title: `Payroll Report - ${dateRange.payFrom}`,
-        Author: company.name,
-        Subject: 'Payroll Summary Report',
-      }
-    });
-
-    // Set response headers
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename=payroll-report-${dateRange.payFrom}-${dateRange.payTo}.pdf`
-    );
-
-    // Pipe PDF to response
-    doc.pipe(res);
-
-    // ═══════════════════════════════════════════════════════
-    // HEADER
-    // ═══════════════════════════════════════════════════════
-    doc
-      .fontSize(24)
-      .font('Helvetica-Bold')
-      .text('PAYROLL SUMMARY REPORT', { align: 'center' })
-      .moveDown(0.5);
-
-    doc
-      .fontSize(10)
-      .font('Helvetica')
-      .text(company.name, { align: 'center' })
-      .text(`${company.addressLine1 || ''} ${company.city || ''}, ${company.state || ''} ${company.postalCode || ''}`, { align: 'center' })
-      .text(company.businessEmail || '', { align: 'center' })
-      .moveDown(1.5);
-
-    // ═══════════════════════════════════════════════════════
-    // PAY PERIOD INFO
-    // ═══════════════════════════════════════════════════════
-    const infoY = doc.y;
-    
-    doc
-      .fontSize(11)
-      .font('Helvetica-Bold')
-      .text('Pay Period:', 50, infoY)
-      .font('Helvetica')
-      .text(`${dateRange.payFrom} - ${dateRange.payTo}`, 160, infoY);
-
-    doc
-      .font('Helvetica-Bold')
-      .text('Pay Date:', 50, doc.y + 5)
-      .font('Helvetica')
-      .text(dateRange.payDate || new Date().toISOString().split('T')[0], 160, doc.y - 12);
-
-    doc
-      .font('Helvetica-Bold')
-      .text('Check Starting #:', 50, doc.y + 5)
-      .font('Helvetica')
-      .text(checkNumber || 'N/A', 160, doc.y - 12);
-
-    doc.moveDown(2);
-
-    if (req.body.excludedEmployees && req.body.excludedEmployees.length > 0) {
-      doc.moveDown(0.5);
-      
-      const noticeBoxY = doc.y;
-      const noticeHeight = 40 + (Math.ceil(req.body.excludedEmployees.length / 3) * 12);
-      
-      doc
-        .rect(50, noticeBoxY, 495, noticeHeight)
-        .fillAndStroke('#FEF3C7', '#F59E0B');
-      
-      doc
-        .fillColor('#92400E')
-        .fontSize(10)
-        .font('Helvetica-Bold')
-        .text('⚠️ EXCLUDED EMPLOYEES (No Pay Rate)', 60, noticeBoxY + 10);
-      
-      doc
-        .fontSize(9)
-        .font('Helvetica')
-        .fillColor('#78350F')
-        .text(
-          `The following ${req.body.excludedEmployees.length} employee(s) were excluded from this report due to missing pay rate configuration:`,
-          60,
-          noticeBoxY + 25,
-          { width: 475 }
-        );
-      
-      doc
-        .fontSize(8)
-        .fillColor('#92400E')
-        .text(
-          req.body.excludedEmployees.join(', '),
-          60,
-          doc.y + 5,
-          { width: 475 }
-        );
-      
-      doc.fillColor('#000000');
-      doc.y = noticeBoxY + noticeHeight + 10;
     }
-    
-    doc.moveDown(1);
 
-    // ═══════════════════════════════════════════════════════
-    // SUMMARY BOX
-    // ═══════════════════════════════════════════════════════
-    const summaryBoxY = doc.y;
-    const summaryBoxHeight = 100;
+    // Build frozen JSON snapshot
+    const payrollSnapshot = {
+      payDate,
+      periodStart,
+      periodEnd,
+      checkNumberStart,
+      processedAt: new Date().toISOString(),
+      processedBy: userId,
+      employees: employees.map((emp, index) => ({
+        employeeId: emp.id,
+        employeeName: emp.name,
+        position: emp.position,
+        payType: emp.payrollDetails?.payType || 'hourly',
+        checkNumber: String(parseInt(checkNumberStart) + index),
+        
+        // Earnings breakdown
+        earnings: emp.calculated.earningsBreakdown,
+        grossPay: emp.calculated.grossEarnings,
+        
+        // Taxes breakdown
+        taxes: emp.taxes,
+        totalTaxes: emp.taxes.totalTaxes,
+        
+        // Deductions breakdown
+        deductions: emp.calculated.deductionsBreakdown,
+        totalDeductions: emp.calculated.totalDeductions,
+        
+        // Net pay (after taxes and deductions)
+        netPay: emp.netPayAfterTaxes,
+        
+        // Hours data (if available)
+        hoursData: hoursData[emp.id] || null,
+      })),
+      
+      // Metadata
+      earningTypes: earningTypes.filter(et => et.enabled !== false),
+      deductionTypes: deductionTypes.filter(dt => dt.enabled !== false),
+      totals,
+      
+      // Tax rates used (for historical record)
+      taxRatesUsed: {
+        federalRate: 0.12,
+        stateRate: 0.05,
+        ficaRate: 0.062,
+        medicareRate: 0.0145,
+        sdiRate: 0.011,
+      },
+      
+      systemVersion: '1.0',
+    };
 
-    doc
-      .rect(50, summaryBoxY, 495, summaryBoxHeight)
-      .fillAndStroke('#F3F4F6', '#E5E7EB');
-
-    doc
-      .fillColor('#000000')
-      .fontSize(14)
-      .font('Helvetica-Bold')
-      .text('PAYROLL SUMMARY', 50 + 10, summaryBoxY + 10, { width: 475 });
-
-    const summaryY = summaryBoxY + 40;
-    const col1X = 70;
-    const col2X = 180;
-    const col3X = 290;
-    const col4X = 400;
-
-    // Row 1: Employees and Hours
-    doc
-      .fontSize(9)
-      .font('Helvetica')
-      .fillColor('#6B7280')
-      .text('EMPLOYEES', col1X, summaryY)
-      .text('REGULAR HRS', col2X, summaryY)
-      .text('OVERTIME HRS', col3X, summaryY)
-      .text('TOTAL HOURS', col4X, summaryY);
-
-    doc
-      .fontSize(16)
-      .font('Helvetica-Bold')
-      .fillColor('#000000')
-      .text(totals.totalEmployees.toString(), col1X, summaryY + 15)
-      .fillColor('#3B82F6')
-      .text(totals.totalRegularHours.toFixed(1), col2X, summaryY + 15)
-      .fillColor('#F59E0B')
-      .text(totals.totalOvertimeHours.toFixed(1), col3X, summaryY + 15)
-      .fillColor('#10B981')
-      .text((totals.totalRegularHours + totals.totalOvertimeHours).toFixed(1), col4X, summaryY + 15);
-
-    // Row 2: Financial Summary
-    const summaryY2 = summaryY + 40;
-    doc
-      .fontSize(9)
-      .font('Helvetica')
-      .fillColor('#6B7280')
-      .text('GROSS PAY', col1X, summaryY2)
-      .text('DEDUCTIONS', col2X, summaryY2)
-      .text('NET PAY', col3X, summaryY2);
-
-    doc
-      .fontSize(16)
-      .font('Helvetica-Bold')
-      .fillColor('#10B981')
-      .text(`$${totals.totalGross.toLocaleString('en-US', {minimumFractionDigits: 2})}`, col1X, summaryY2 + 15)
-      .fillColor('#EF4444')
-      .text(`$${totals.totalDeductions.toLocaleString('en-US', {minimumFractionDigits: 2})}`, col2X, summaryY2 + 15)
-      .fillColor('#3B82F6')
-      .text(`$${totals.totalNet.toLocaleString('en-US', {minimumFractionDigits: 2})}`, col3X, summaryY2 + 15);
-
-    doc.fillColor('#000000');
-    doc.y = summaryBoxY + summaryBoxHeight + 20;
-
-    // ═══════════════════════════════════════════════════════
-    // EMPLOYEE TABLE HEADER
-    // ═══════════════════════════════════════════════════════
-    doc
-      .fontSize(12)
-      .font('Helvetica-Bold')
-      .text('EMPLOYEE PAYROLL DETAILS', 50, doc.y)
-      .moveDown(0.5);
-
-    const tableTop = doc.y;
-    const rowHeight = 35;
-    
-    // Table header
-    doc
-      .rect(50, tableTop, 495, rowHeight)
-      .fillAndStroke('#374151', '#374151');
-
-    doc
-      .fontSize(9)
-      .font('Helvetica-Bold')
-      .fillColor('#FFFFFF')
-      .text('EMPLOYEE', 60, tableTop + 12)
-      .text('HOURS', 240, tableTop + 12, { width: 60, align: 'center' })
-      .text('GROSS', 310, tableTop + 12, { width: 70, align: 'right' })
-      .text('DEDUCT', 390, tableTop + 12, { width: 70, align: 'right' })
-      .text('NET PAY', 470, tableTop + 12, { width: 65, align: 'right' });
-
-    doc.fillColor('#000000');
-
-    // ═══════════════════════════════════════════════════════
-    // EMPLOYEE ROWS
-    // ═══════════════════════════════════════════════════════
-    let currentY = tableTop + rowHeight;
-
-    processedEmployees.forEach((emp, index) => {
-      // Check if we need a new page
-      if (currentY > 700) {
-        doc.addPage();
-        currentY = 50;
-      }
-
-      // Alternating row colors
-      const bgColor = index % 2 === 0 ? '#FFFFFF' : '#F9FAFB';
-      doc
-        .rect(50, currentY, 495, rowHeight)
-        .fillAndStroke(bgColor, '#E5E7EB');
-
-      // Employee Name & Position
-      doc
-        .fontSize(10)
-        .font('Helvetica-Bold')
-        .fillColor('#000000')
-        .text(emp.name, 60, currentY + 8, { width: 170, ellipsis: true })
-        .fontSize(8)
-        .font('Helvetica')
-        .fillColor('#6B7280')
-        .text(emp.position, 60, currentY + 22, { width: 170, ellipsis: true });
-
-      // Hours (Regular + OT)
-      const totalHours = emp.regularHours + emp.overtimeHours;
-      doc
-        .fontSize(9)
-        .font('Helvetica-Bold')
-        .fillColor('#000000')
-        .text(`${totalHours.toFixed(1)}h`, 240, currentY + 12, { width: 60, align: 'center' });
-
-      // Gross Pay
-      doc
-        .fontSize(10)
-        .font('Helvetica-Bold')
-        .fillColor('#10B981')
-        .text(`$${emp.grossEarnings.toLocaleString('en-US', {minimumFractionDigits: 2})}`, 310, currentY + 12, { width: 70, align: 'right' });
-
-      // Deductions
-      doc
-        .fillColor('#EF4444')
-        .text(`$${emp.totalDeductions.toLocaleString('en-US', {minimumFractionDigits: 2})}`, 390, currentY + 12, { width: 70, align: 'right' });
-
-      // Net Pay
-      doc
-        .fillColor(emp.netPay < 0 ? '#EF4444' : '#3B82F6')
-        .font('Helvetica-Bold')
-        .text(`$${emp.netPay.toLocaleString('en-US', {minimumFractionDigits: 2})}`, 470, currentY + 12, { width: 65, align: 'right' });
-
-      currentY += rowHeight;
+    // Save to database
+    const payrollRun = await prisma.payrollRun.create({
+      data: {
+        companyId,
+        periodStart: new Date(periodStart),
+        periodEnd: new Date(periodEnd),
+        payDate: new Date(payDate),
+        checkNumberStart,
+        status: 'finalized',
+        locked: true,
+        
+        totalGross: parseFloat(totals.grossEarnings),
+        totalTaxes: parseFloat(totals.totalTaxes),
+        totalDeductions: parseFloat(totals.totalDeductions),
+        totalNet: parseFloat(totals.netPay),
+        
+        payrollSnapshot,
+        
+        savedBy: userId,
+        savedAt: new Date(),
+      },
     });
 
-    doc.fillColor('#000000');
+    console.log('✅ Payroll Run Saved:', {
+      id: payrollRun.id,
+      period: `${periodStart} to ${periodEnd}`,
+      employees: employees.length,
+      totalNet: totals.netPay,
+    });
 
-    // ═══════════════════════════════════════════════════════
-    // FOOTER
-    // ═══════════════════════════════════════════════════════
-    const footerY = 750;
-    
-    doc
-      .fontSize(8)
-      .font('Helvetica')
-      .fillColor('#6B7280')
-      .text(
-        `Generated on ${new Date().toLocaleString('en-US', { 
-          dateStyle: 'long', 
-          timeStyle: 'short' 
-        })}`,
-        50,
-        footerY,
-        { align: 'center', width: 495 }
-      )
-      .text(
-        `Report prepared by ${req.user.username || 'System'} | ${company.name}`,
-        50,
-        footerY + 12,
-        { align: 'center', width: 495 }
-      );
-
-    // Finalize PDF
-    doc.end();
-
-    console.log(`[✅ Payroll PDF Generated] ${totals.totalEmployees} employees`);
+    return res.status(201).json({
+      success: true,
+      message: 'Payroll saved successfully',
+      data: {
+        payrollRunId: payrollRun.id,
+        periodStart,
+        periodEnd,
+        payDate,
+        employeesProcessed: employees.length,
+        totalNet: totals.netPay,
+      },
+    });
 
   } catch (error) {
-    console.error("❌ Error generating payroll PDF:", error);
-    return res.status(500).json({ 
+    console.error('❌ Error saving payroll:', error);
+    return res.status(500).json({
       success: false,
-      message: "Failed to generate PDF report", 
-      error: error.message 
+      message: error.message || 'Failed to save payroll',
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
+  }
+};
+
+exports.getPayrollRun = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { companyId } = req.user;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payroll run ID is required',
+      });
+    }
+
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: {
+        id,
+        companyId,
+      },
+      select: {
+        id: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+        checkNumberStart: true,
+        status: true,
+        locked: true,
+        totalGross: true,
+        totalTaxes: true,
+        totalDeductions: true,
+        totalNet: true,
+        payrollSnapshot: true,
+        savedBy: true,
+        savedAt: true,
+        createdAt: true,
+      },
+    });
+
+    if (!payrollRun) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payroll run not found',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payroll run retrieved successfully',
+      data: payrollRun,
+    });
+
+  } catch (error) {
+    console.error('Error fetching payroll run:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payroll run',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+exports.listPayrollRuns = async (req, res) => {
+  try {
+    const { companyId } = req.user;
+    const { status, limit = 20, offset = 0 } = req.query;
+
+    const where = { companyId };
+    if (status) {
+      where.status = status;
+    }
+
+    const payrollRuns = await prisma.payrollRun.findMany({
+      where,
+      select: {
+        id: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+        status: true,
+        locked: true,
+        totalGross: true,
+        totalNet: true,
+        savedAt: true,
+      },
+      orderBy: {
+        periodEnd: 'desc',
+      },
+      take: parseInt(limit),
+      skip: parseInt(offset),
+    });
+
+    const total = await prisma.payrollRun.count({ where });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payroll runs retrieved successfully',
+      data: {
+        payrollRuns,
+        pagination: {
+          total,
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error('Error listing payroll runs:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to list payroll runs',
+    });
+  }
+};
+
+exports.getPayrollReports = async (req, res) => {
+  try {
+    const { companyId } = req.user;
+    const { from, to, year, sortBy = 'payDate' } = req.query;
+
+    // Build date range filter
+    const where = { 
+      companyId,
+      locked: true, // Only show saved/finalized payrolls
+    };
+
+    if (from && to && year) {
+      const fromDate = new Date(`${year}-${from}`);
+      const toDate = new Date(`${year}-${to}`);
+      
+      where.periodStart = { gte: fromDate };
+      where.periodEnd = { lte: toDate };
+    }
+
+    // Determine sort order
+    let orderBy = {};
+    switch (sortBy) {
+      case 'Pay Date':
+        orderBy = { payDate: 'desc' };
+        break;
+      case 'Employee Name':
+        orderBy = { createdAt: 'desc' }; // Fallback
+        break;
+      case 'Amount':
+        orderBy = { totalNet: 'desc' };
+        break;
+      default:
+        orderBy = { payDate: 'desc' };
+    }
+
+    const payrollRuns = await prisma.payrollRun.findMany({
+      where,
+      select: {
+        id: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+        checkNumberStart: true,
+        totalGross: true,
+        totalTaxes: true,
+        totalDeductions: true,
+        totalNet: true,
+        payrollSnapshot: true,
+        savedAt: true,
+      },
+      orderBy,
+    });
+
+    // Transform data for frontend
+    const reports = payrollRuns.map(run => ({
+      id: run.id,
+      payDate: run.payDate,
+      periodStart: run.periodStart,
+      periodEnd: run.periodEnd,
+      checkNumberStart: run.checkNumberStart,
+      totalGross: parseFloat(run.totalGross),
+      totalTaxes: parseFloat(run.totalTaxes),
+      totalDeductions: parseFloat(run.totalDeductions),
+      totalNet: parseFloat(run.totalNet),
+      employeeCount: run.payrollSnapshot?.employees?.length || 0,
+      savedAt: run.savedAt,
+      employees: run.payrollSnapshot?.employees || [],
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payroll reports retrieved successfully',
+      data: {
+        reports,
+        count: reports.length,
+      },
+    });
+
+  } catch (error) {
+    console.error('Error fetching payroll reports:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payroll reports',
+    });
+  }
+};
+
+exports.getUnviewedReportsCount = async (req, res) => {
+  try {
+    const { companyId, userId } = req.user;
+
+    // Count payrolls saved in last 7 days (adjust as needed)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const count = await prisma.payrollRun.count({
+      where: {
+        companyId,
+        locked: true,
+        savedAt: {
+          gte: sevenDaysAgo,
+        },
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: { count },
+    });
+
+  } catch (error) {
+    console.error('Error counting unviewed reports:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to count reports',
+    });
+  }
+};
+
+exports.generatePayslipPDF = async (req, res) => {
+  try {
+    const { payrollRunId, employeeId } = req.params;
+    const { companyId } = req.user;
+
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: { id: payrollRunId, companyId },
+      select: {
+        payrollSnapshot: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+      },
+    });
+
+    if (!payrollRun) {
+      return res.status(404).json({ success: false, message: 'Payroll run not found' });
+    }
+
+    const employee = payrollRun.payrollSnapshot.employees.find(e => e.employeeId === employeeId);
+    
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { name: true, addressLine1: true, city: true, state: true, postalCode: true },
+    });
+
+    // ✅ FIX: Get earning/deduction types from snapshot
+    const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
+    const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
+
+    // Generate PDF with labels
+    const pdfBuffer = await generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes);
+
+    // ✅ FIX: Better filename
+    const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0]; // YYYY-MM-DD
+    const endDate = new Date(payrollRun.periodEnd).toISOString().split('T')[0];
+    const filename = `Payslip_${cleanName}_${startDate}_to_${endDate}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(pdfBuffer);
+
+  } catch (error) {
+    console.error('❌ Error generating payslip:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate payslip' });
   }
 };
