@@ -12,7 +12,8 @@ const {
     generatePayslipPDF,
     getMyPayslips,
     getMyPayslipPDF,
-    getSuggestedCheckNumber
+    getSuggestedCheckNumber,
+    generateCheckPDF
 } = require("@controllers/PayrollSystem/payrollSystemController");
 const {
     importClockHours,
@@ -34,6 +35,7 @@ router.get("/unviewed-reports-count", authenticate, getUnviewedReportsCount);
 router.get("/my-payslip/:payrollRunId", authenticate, getMyPayslipPDF);
 router.get("/generate-payslip-pdf/:payrollRunId/:employeeId", authenticate, generatePayslipPDF);
 router.get("/suggested-check-number", authenticate, getSuggestedCheckNumber);
+router.get("/generate-check-pdf/:payrollRunId/:employeeId", authenticate, generateCheckPDF);
 
 router.get("/my-payslips", authenticate, getMyPayslips); // For employee to view their payslips
 

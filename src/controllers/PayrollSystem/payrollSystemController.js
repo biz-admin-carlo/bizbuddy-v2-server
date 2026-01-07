@@ -697,3 +697,58 @@ exports.getSuggestedCheckNumber = async (req, res) => {
     });
   }
 };
+
+exports.generateCheckPDF = async (req, res) => {
+  try {
+    const { payrollRunId, employeeId } = req.params;
+    const { companyId } = req.user;
+
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: { id: payrollRunId, companyId },
+      select: {
+        payrollSnapshot: true,
+        payDate: true,
+        periodStart: true,
+        periodEnd: true,
+      },
+    });
+
+    if (!payrollRun) {
+      return res.status(404).json({ success: false, message: 'Payroll run not found' });
+    }
+
+    const employee = payrollRun.payrollSnapshot.employees.find(e => e.employeeId === employeeId);
+    
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { 
+        name: true, 
+        addressLine1: true, 
+        city: true, 
+        state: true, 
+        postalCode: true 
+      },
+    });
+
+    const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
+    const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
+
+    const generateCheckPDF = require('@utils/generateCheckPDF');
+    const pdfBuffer = await generateCheckPDF(payrollRun, employee, company, earningTypes, deductionTypes);
+
+    const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const filename = `Check_${employee.checkNumber}_${cleanName}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(pdfBuffer);
+
+  } catch (error) {
+    console.error('❌ Error generating check:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate check' });
+  }
+};
