@@ -732,8 +732,8 @@ exports.generateCheckPDF = async (req, res) => {
         city: true, 
         state: true, 
         postalCode: true,
-        checkTemplate: true,      // ✅ Add this
-        checkPositions: true,      // ✅ Add this
+        checkTemplate: true,      
+        checkPositions: true,
       },
     });
 

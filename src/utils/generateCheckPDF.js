@@ -273,7 +273,7 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
       doc.moveTo(50, currentY).lineTo(545, currentY).stroke();
 
       // ====== FOOTER ======
-      currentY += 20;
+      currentY += 25;
       doc.fontSize(7).font('Helvetica').fillColor('#666');
       doc.text('Printed with BizBuddy payroll software', 50, currentY, { align: 'left', width: 495 });
 
