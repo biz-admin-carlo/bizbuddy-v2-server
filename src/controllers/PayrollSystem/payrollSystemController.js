@@ -723,6 +723,7 @@ exports.generateCheckPDF = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Employee not found' });
     }
 
+    // ✅ FETCH COMPANY WITH CHECK POSITIONS
     const company = await prisma.company.findUnique({
       where: { id: companyId },
       select: { 
@@ -730,7 +731,9 @@ exports.generateCheckPDF = async (req, res) => {
         addressLine1: true, 
         city: true, 
         state: true, 
-        postalCode: true 
+        postalCode: true,
+        checkTemplate: true,      // ✅ Add this
+        checkPositions: true,      // ✅ Add this
       },
     });
 

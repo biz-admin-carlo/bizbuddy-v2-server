@@ -13,48 +13,70 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
 
+      // ✅ USE CUSTOM POSITIONS OR DEFAULTS (with fontSize support)
+      const defaultPositions = {
+        date: { x: 480, y: 95, fontSize: 10 },
+        amountWords: { x: 90, y: 135, fontSize: 10 },
+        amountNumber: { x: 455, y: 133, fontSize: 14 },
+        payeeName: { x: 90, y: 170, fontSize: 11 },
+        payeeAddress: { x: 90, y: 185, fontSize: 9 },
+      };
+
+      const positions = company.checkPositions || defaultPositions;
+
       // ================== CHECK SECTION (TOP HALF) ==================
-      // Only print variable data that goes on pre-printed check stock
       
-      // Company Info (Top Left) - adjust Y position to match your check stock
-      doc.fontSize(10).font('Helvetica-Bold').text(company.name || 'COMPANY NAME', 50, 50);
-      doc.fontSize(8).font('Helvetica').text(company.addressLine1 || '', 50, 65);
-      doc.text(`${company.city || ''}, ${company.state || ''} ${company.postalCode || ''}`.trim(), 50, 77);
-
-      // Check Number (Top Right)
-      doc.fontSize(12).font('Helvetica-Bold').text(`${employee.checkNumber}`, 520, 50);
-
-      // Date
+      // Prepare data first
       const payDateFormatted = new Date(payrollRun.payDate).toLocaleDateString('en-US', { 
         month: 'short', 
         day: '2-digit', 
         year: 'numeric' 
       });
-      doc.fontSize(10).font('Helvetica').text(payDateFormatted, 480, 95);
+      
+      const netPay = parseFloat(employee.netPay);
+      const netPayInWords = numberToWords(netPay);
+      const cents = Math.round((netPay % 1) * 100);
+      const formattedAmount = formatCurrency(netPay);
 
-      // Pay Amount (Written) - "ONE THOUSAND THIRTY SEVEN AND 19/100"
-      const netPayInWords = numberToWords(parseFloat(employee.netPay));
-      const cents = Math.round((parseFloat(employee.netPay) % 1) * 100);
-      doc.fontSize(10).font('Helvetica-Bold')
-         .text(`${netPayInWords.toUpperCase()} AND ${cents}/100`, 90, 135, { width: 350 });
+      // 1. DATE - Use custom position & font size
+      const dateSize = positions.date.fontSize || 10;
+      doc.fontSize(dateSize).font('Helvetica')
+         .text(payDateFormatted, positions.date.x, positions.date.y);
 
-      // Pay To (Payee Name)
-      doc.fontSize(11).font('Helvetica-Bold')
-         .text(employee.employeeName.toUpperCase(), 90, 170);
+      // 2. AMOUNT IN WORDS - Use custom position & font size
+      const amountWordsSize = positions.amountWords.fontSize || 10;
+      doc.fontSize(amountWordsSize).font('Helvetica-Bold')
+         .text(`${netPayInWords.toUpperCase()} AND ${cents}/100`, 
+               positions.amountWords.x, positions.amountWords.y, { width: 350 });
 
-      // Amount (Numeric) - in the box on the right
-      doc.fontSize(14).font('Helvetica-Bold')
-         .text(`$${parseFloat(employee.netPay).toFixed(2)}`, 455, 133, { width: 85, align: 'right' });
+      // 3. AMOUNT (NUMERIC) - Use custom position & font size
+      const amountNumberSize = positions.amountNumber.fontSize || 14;
+      doc.fontSize(amountNumberSize).font('Helvetica-Bold')
+         .text(formattedAmount, positions.amountNumber.x, positions.amountNumber.y, 
+               { width: 85, align: 'right' });
 
-      // MICR Line (if needed - usually pre-printed on check stock)
-      // Uncomment if your check stock doesn't have MICR line pre-printed:
-      // doc.fontSize(10).font('Courier').text(`⑈⑆00603⑈   ⑆121000358⑆   06295752⑆⑈`, 50, 260);
+      // 4. EMPLOYEE NAME - Use custom position & font size
+      const payeeNameSize = positions.payeeName.fontSize || 11;
+      doc.fontSize(payeeNameSize).font('Helvetica-Bold')
+         .text(employee.employeeName.toUpperCase(), positions.payeeName.x, positions.payeeName.y);
+
+      // 5. EMPLOYEE ADDRESS - Use custom position & font size
+      if (employee.address || employee.city || employee.state) {
+        const addressLine1 = employee.address || '';
+        const addressLine2 = `${employee.city || ''}, ${employee.state || ''} ${employee.postalCode || ''}`.trim();
+        
+        const addressSize = positions.payeeAddress.fontSize || 9;
+        doc.fontSize(addressSize).font('Helvetica')
+           .text(addressLine1, positions.payeeAddress.x, positions.payeeAddress.y);
+        doc.text(addressLine2, positions.payeeAddress.x, positions.payeeAddress.y + 12);
+      }
 
       // ================== PERFORATED LINE ==================
       const stubStartY = 320;
       doc.fontSize(10).text('✂', 25, stubStartY - 20);
       doc.fontSize(7).fillColor('#999')
-         .text('- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -', 40, stubStartY - 15);
+         .text('- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -', 
+               40, stubStartY - 15);
       doc.fillColor('#000');
 
       // ================== PAY STUB SECTION (BOTTOM HALF) ==================
@@ -108,7 +130,7 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
       
       // Horizontal lines
       doc.moveTo(50, tableTop).lineTo(545, tableTop).stroke();
-      doc.moveTo(50, tableTop + 15).lineTo(545, tableTop + 15).stroke(); // Header separator
+      doc.moveTo(50, tableTop + 15).lineTo(545, tableTop + 15).stroke();
       
       // Vertical divider
       doc.moveTo(centerDivider, tableTop).lineTo(centerDivider, tableBottom).stroke();
@@ -153,7 +175,7 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
             
             doc.text(hoursValue, 150, currentY, { width: 40, align: 'right' });
             doc.text(parseFloat(value).toFixed(2), 200, currentY, { width: 50, align: 'right' });
-            doc.text('0.00', 260, currentY, { width: 60, align: 'right' }); // YTD placeholder
+            doc.text('0.00', 260, currentY, { width: 60, align: 'right' });
             
             currentY += 10;
           }
@@ -251,9 +273,9 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
       doc.moveTo(50, currentY).lineTo(545, currentY).stroke();
 
       // ====== FOOTER ======
-      currentY += 25;
+      currentY += 20;
       doc.fontSize(7).font('Helvetica').fillColor('#666');
-      doc.text('Printed with BizBuddy payroll software.', 50, currentY, { align: 'left', width: 495 });
+      doc.text('Printed with BizBuddy payroll software', 50, currentY, { align: 'left', width: 495 });
 
       doc.end();
     } catch (error) {
@@ -263,6 +285,10 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
 }
 
 // ================== HELPER FUNCTIONS ==================
+
+function formatCurrency(num) {
+  return num.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
 
 function numberToWords(num) {
   const ones = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
