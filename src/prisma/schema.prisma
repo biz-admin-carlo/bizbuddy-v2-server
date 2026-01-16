@@ -520,6 +520,17 @@ model Company {
   gracePeriodMinutes      Int?     @default(15)
   checkTemplate     String?   @default("default")
   checkPositions    Json?
+
+  clockInGracePeriod       Int       @default(30)  // minutes after scheduled start
+  clockOutGracePeriod      Int       @default(30)  // minutes after scheduled end
+  notifyEmployeeMissedIn   Boolean   @default(true)
+  notifyEmployeeMissedOut  Boolean   @default(true)
+  notifyAdminMissedClocks  Boolean   @default(true)
+  morningReportTime        String    @default("10:00") // HH:mm format
+  eveningReportTime        String    @default("18:00") // HH:mm format
+  
+  emailNotificationLogs EmailNotificationLog[]
+
 }
 
 model Department {
@@ -641,6 +652,25 @@ model UserActivity {
   user                User     @relation(fields: [userId], references: [id])
 }
 
+model EmailNotificationLog {
+  id               String           @id @default(cuid())
+  notificationType NotificationCode
+  recipientEmail   String
+  recipientUserId  String?
+  companyId        String
+  subject          String
+  body             String           @db.Text
+  sentAt           DateTime         @default(now()) @db.Timestamptz(6)
+  status           String           @default("sent") // "sent", "failed", "bounced"
+  errorMessage     String?
+  metadata         Json?            // Store additional context (shift details, employee list, etc.)
+  
+  company          Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  @@index([companyId, notificationType, sentAt])
+  @@index([recipientUserId, sentAt])
+}
+
 model Shift {
   id                     String             @id @default(cuid())
   companyId              String
@@ -734,6 +764,9 @@ model TimeLog {
   user                    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdFromRequest      RequestedTimeLog[] @relation("CreatedFromRequest")
   approval                TimeLogApproval?
+
+  autoClockOut    Boolean   @default(false)
+  autoClockOutAt  DateTime?
   
   @@index([isApproved])
   @@index([timeIn, isApproved])
@@ -915,6 +948,11 @@ enum NotificationCode {
   NOTIF001
   NOTIF002
   NOTIF003
+  MISSED_CLOCK_IN        
+  MISSED_CLOCK_OUT         
+  DAILY_CLOCK_IN_REPORT    
+  DAILY_CLOCK_OUT_REPORT 
+  AUTO_CLOCK_OUT
 }
 
 enum userStatus {

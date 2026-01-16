@@ -29,6 +29,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "firebase-admin": "^13.5.0",
+    "handlebars": "^4.7.8",
     "jsonwebtoken": "^9.0.2",
     "module-alias": "^2.2.3",
     "moment-timezone": "^0.6.0",
@@ -37,7 +38,7 @@
     "pdfkit": "^0.17.2",
     "pg": "^8.13.1",
     "rrule": "^2.8.1",
-    "socket.io": "^4.8.1",
+    "socket.io": "^4.8.3",
     "stripe": "^17.7.0"
   },
   "devDependencies": {
@@ -45,13 +46,15 @@
     "prisma": "^6.5.0"
   },
   "_moduleAliases": {
+    "@root": ".",
+    "@config": "./src/config",
     "@controllers": "./src/controllers",
     "@middlewares": "./src/middlewares",
     "@routes": "./src/routes",
-    "@models": "./src/models",
-    "@config": "./src/config",
     "@utils": "./src/utils",
+    "@services": "./src/services",
     "@workers": "./src/workers",
+    "@jobs": "./src/jobs",
     "@emails": "./src/emails"
   }
 }
