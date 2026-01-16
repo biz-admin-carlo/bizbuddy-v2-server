@@ -33,7 +33,7 @@ const companyInformationRoutes = require("@routes/PayrollSystem/companyInformati
 const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes");
 const employeePayrollDetailsRoutes = require("@routes/PayrollSystem/employeePayrollDetailsRoutes");
 const cutOffDetailsRoutes = require("@routes/Features/cutoffPeriodRoutes");
-
+const notificationRoutes = require('./notificationRoutes');
 
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
@@ -65,6 +65,7 @@ router.use("/payroll-system", payrollSystemRoutes);
 router.use("/company-information", companyInformationRoutes);
 router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
 router.use("/cutoff-periods", cutOffDetailsRoutes);
+router.use('/notifications', notificationRoutes);
 
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
