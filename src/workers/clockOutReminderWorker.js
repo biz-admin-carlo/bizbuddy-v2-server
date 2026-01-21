@@ -93,6 +93,8 @@ async function processClockOutReminders() {
                 shiftEnd: shiftEnd.toISOString(),
                 minutesRemaining: String(Math.round(minutesToEnd)),
                 type: "clockOutReminder",
+                targetScreen: "timekeeping-punch",
+                targetRoute: "/(tabs)/(shifts)/timekeeping-punch",
               },
             });
           } catch (pushErr) {

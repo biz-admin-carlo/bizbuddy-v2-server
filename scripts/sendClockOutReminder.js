@@ -152,6 +152,8 @@ async function main() {
           shiftStart: shiftStart ? shiftStart.toISOString() : "",
           minutesRemaining: String(minutesToStart ?? ""),
           type: "clockInReminder",
+          targetScreen: "timekeeping-punch",
+          targetRoute: "/(tabs)/(shifts)/timekeeping-punch",
         }
       : {
           timeLogId: String(activeLog?.id || ""),
@@ -159,6 +161,8 @@ async function main() {
           shiftEnd: shiftEnd ? shiftEnd.toISOString() : "",
           minutesRemaining: String(minutesToEnd ?? ""),
           type: "clockOutReminder",
+          targetScreen: "timekeeping-punch",
+          targetRoute: "/(tabs)/(shifts)/timekeeping-punch",
         };
 
     const resp = await messaging.send({
