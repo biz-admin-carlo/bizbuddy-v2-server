@@ -26,38 +26,42 @@ function calculateLateHours(timeLog, userShift) {
 
 const submitOvertime = async (req, res) => {
   try {
-    const { 
-      timeLogId, 
-      approverId, 
-      requesterReason, 
-      requestedHours, 
+    const {
+      timeLogId,
+      approverId,
+      requesterReason,
+      requestedHours,
       lateHours: lateHoursFromBody,
       originalClockOut,
       projectedClockOut,
-      totalProjectedHours
+      totalProjectedHours,
     } = req.body;
 
     if (!timeLogId || !approverId) {
-      return res.status(400).json({ message: "timeLogId and approverId are required." });
+      return res
+        .status(400)
+        .json({ message: "timeLogId and approverId are required." });
     }
 
     if (!requestedHours || parseFloat(requestedHours) <= 0) {
-      return res.status(400).json({ message: "requestedHours must be greater than 0." });
+      return res
+        .status(400)
+        .json({ message: "requestedHours must be greater than 0." });
     }
 
     // Validate timeLog exists and belongs to user
-    const timeLog = await prisma.timeLog.findUnique({ 
+    const timeLog = await prisma.timeLog.findUnique({
       where: { id: timeLogId },
       include: {
         user: {
           include: {
             department: true,
-            employmentDetail: true
-          }
-        }
-      }
+            employmentDetail: true,
+          },
+        },
+      },
     });
-    
+
     if (!timeLog || timeLog.userId !== req.user.id) {
       return res.status(404).json({ message: "TimeLog not found." });
     }
@@ -68,16 +72,18 @@ const submitOvertime = async (req, res) => {
         id: approverId,
         companyId: req.user.companyId,
         role: { in: ["admin", "supervisor", "superadmin"] },
-        status: 'active'
+        status: "active",
       },
     });
-    
+
     if (!approver) {
       return res.status(400).json({ message: "Invalid or inactive approver." });
     }
 
     if (approverId === req.user.id) {
-      return res.status(400).json({ message: "You cannot approve your own overtime request." });
+      return res
+        .status(400)
+        .json({ message: "You cannot approve your own overtime request." });
     }
 
     // Calculate late hours if not provided
@@ -103,7 +109,8 @@ const submitOvertime = async (req, res) => {
     }
 
     // Determine user's department
-    const userDepartmentId = timeLog.user.departmentId || timeLog.user.employmentDetail?.departmentId;
+    const userDepartmentId =
+      timeLog.user.departmentId || timeLog.user.employmentDetail?.departmentId;
 
     // Create overtime request
     const newOT = await prisma.overtime.create({
@@ -121,8 +128,8 @@ const submitOvertime = async (req, res) => {
         timeLog: {
           select: {
             timeIn: true,
-            timeOut: true
-          }
+            timeOut: true,
+          },
         },
         requester: {
           select: {
@@ -131,10 +138,10 @@ const submitOvertime = async (req, res) => {
             profile: {
               select: {
                 firstName: true,
-                lastName: true
-              }
-            }
-          }
+                lastName: true,
+              },
+            },
+          },
         },
         approver: {
           select: {
@@ -143,37 +150,38 @@ const submitOvertime = async (req, res) => {
             profile: {
               select: {
                 firstName: true,
-                lastName: true
-              }
-            }
-          }
-        }
-      }
+                lastName: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     // Log the activity for audit trail
     await prisma.userActivity.create({
       data: {
         userId: req.user.id,
-        activityDescription: `Submitted overtime request for ${requestedHours}h on ${new Date(timeLog.timeIn).toLocaleDateString()}`
-      }
+        activityDescription: `Submitted overtime request for ${requestedHours}h on ${new Date(
+          timeLog.timeIn
+        ).toLocaleDateString()}`,
+      },
     });
 
-    return res.status(201).json({ 
+    return res.status(201).json({
       message: "Overtime request submitted successfully.",
       data: {
         ...format(newOT),
         projectedClockOut,
         totalProjectedHours,
-        originalClockOut: timeLog.timeOut
-      }
+        originalClockOut: timeLog.timeOut,
+      },
     });
-
   } catch (err) {
     console.error("submitOvertime error:", err);
-    return res.status(500).json({ 
+    return res.status(500).json({
       message: "Internal server error.",
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
     });
   }
 };
@@ -221,7 +229,9 @@ const decideOT = (newStatus) => async (req, res) => {
       where: { id, approverId: req.user.id, status: "pending" },
     });
     if (!ot) {
-      return res.status(404).json({ message: "OT request not found or already processed." });
+      return res
+        .status(404)
+        .json({ message: "OT request not found or already processed." });
     }
 
     const updated = await prisma.overtime.update({
@@ -229,7 +239,9 @@ const decideOT = (newStatus) => async (req, res) => {
       data: { status: newStatus, approverComments },
     });
 
-    return res.status(200).json({ message: `Overtime ${newStatus}.`, data: format(updated) });
+    return res
+      .status(200)
+      .json({ message: `Overtime ${newStatus}.`, data: format(updated) });
   } catch (err) {
     console.error(`${newStatus}OT:`, err);
     return res.status(500).json({ message: "Internal server error." });
@@ -252,7 +264,7 @@ const deleteOT = async (req, res) => {
 
 const getAllOT = async (req, res) => {
   console.log(req.user);
-  
+
   try {
     let whereClause = {};
 
@@ -267,8 +279,8 @@ const getAllOT = async (req, res) => {
         // Admin sees all OT requests from their assigned company
         whereClause = {
           requester: {
-            companyId: req.user.companyId
-          }
+            companyId: req.user.companyId,
+          },
         };
         break;
 
@@ -276,15 +288,15 @@ const getAllOT = async (req, res) => {
         // Supervisor/Department Head sees all OT requests from their department
         whereClause = {
           requester: {
-            departmentId: req.user.departmentId
-          }
+            departmentId: req.user.departmentId,
+          },
         };
         break;
 
       default:
         // Fallback: only show where user is the direct approver
         whereClause = {
-          approverId: req.user.id
+          approverId: req.user.id,
         };
     }
 
@@ -292,24 +304,24 @@ const getAllOT = async (req, res) => {
       where: whereClause,
       include: {
         timeLog: true,
-        requester: { 
-          select: { 
-            id: true, 
-            email: true, 
+        requester: {
+          select: {
+            id: true,
+            email: true,
             username: true,
             departmentId: true,
             companyId: true,
             department: { select: { id: true, name: true } },
-            company: { select: { id: true, name: true } }
-          } 
+            company: { select: { id: true, name: true } },
+          },
         },
         approver: {
-          select: { id: true, email: true, username: true }
-        }
+          select: { id: true, email: true, username: true },
+        },
       },
       orderBy: { createdAt: "desc" },
     });
-    
+
     return res.status(200).json({ data: ots.map(format) });
   } catch (err) {
     console.error("getAllOT:", err);
@@ -328,9 +340,7 @@ const detectSmartOvertime = async (req, res) => {
     fromDate.setDate(toDate.getDate() - 30);
 
     // 1️⃣ Build TimeLog query (token-based)
-    const whereClause = isAdmin
-      ? { user: { companyId } }
-      : { userId };
+    const whereClause = isAdmin ? { user: { companyId } } : { userId };
 
     whereClause.timeIn = { gte: fromDate, lte: toDate };
 
@@ -348,7 +358,9 @@ const detectSmartOvertime = async (req, res) => {
     });
 
     if (!timeLogs.length) {
-      return res.status(200).json({ data: [], message: "No timelogs found for analysis." });
+      return res
+        .status(200)
+        .json({ data: [], message: "No timelogs found for analysis." });
     }
 
     // 2️⃣ Fetch all userShifts for date range
@@ -383,8 +395,10 @@ const detectSmartOvertime = async (req, res) => {
       const logDate = log.timeIn.toISOString().slice(0, 10);
       const shift = shiftMap.get(`${log.userId}-${logDate}`);
 
-      const scheduledStart = shift?.customStartTime || shift?.shift?.startTime || null;
-      const scheduledEnd = shift?.customEndTime || shift?.shift?.endTime || null;
+      const scheduledStart =
+        shift?.customStartTime || shift?.shift?.startTime || null;
+      const scheduledEnd =
+        shift?.customEndTime || shift?.shift?.endTime || null;
 
       const actualStart = new Date(log.timeIn);
       const actualEnd = new Date(log.timeOut);
@@ -415,7 +429,7 @@ const detectSmartOvertime = async (req, res) => {
         overtimeMins = Math.max(0, elapsedMins - schedDurationMins);
       } else {
         // No scheduled shift - treat full duration as potential OT
-        console.log("HELOO")
+        console.log("HELOO");
         type = "Unscheduled";
         overtimeMins = elapsedMins;
       }
@@ -426,11 +440,17 @@ const detectSmartOvertime = async (req, res) => {
       results.push({
         timeLogId: log.id,
         userId: log.userId,
-        employeeName: `${log.user.profile?.firstName || ""} ${log.user.profile?.lastName || ""}`.trim(),
+        employeeName: `${log.user.profile?.firstName || ""} ${
+          log.user.profile?.lastName || ""
+        }`.trim(),
         department: log.user.department?.name || "—",
         date: logDate,
-        scheduledStart: scheduledStart ? new Date(scheduledStart).toISOString() : null,
-        scheduledEnd: scheduledEnd ? new Date(scheduledEnd).toISOString() : null,
+        scheduledStart: scheduledStart
+          ? new Date(scheduledStart).toISOString()
+          : null,
+        scheduledEnd: scheduledEnd
+          ? new Date(scheduledEnd).toISOString()
+          : null,
         actualStart: log.timeIn,
         actualEnd: log.timeOut,
         elapsedMins,
@@ -464,5 +484,5 @@ module.exports = {
   rejectOT,
   deleteOT,
   getAllOT,
-  detectSmartOvertime
+  detectSmartOvertime,
 };

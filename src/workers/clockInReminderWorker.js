@@ -88,6 +88,8 @@ async function processClockInReminders() {
                 shiftStart: shiftStart.toISOString(),
                 minutesRemaining: String(minutesRemaining),
                 type: "clockInReminder",
+                targetScreen: "timekeeping-punch",
+                targetRoute: "/(tabs)/(shifts)/timekeeping-punch",
               },
             });
           } catch (pushErr) {
