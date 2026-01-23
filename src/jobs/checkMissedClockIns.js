@@ -2,9 +2,28 @@ const { prisma } = require('@config/connection');
 const { notifyMissedClockIn } = require('@services/notificationService');
 const moment = require('moment-timezone');
 
-function combineDateWithTime(date, timeString, timezone) {
+function combineDateWithTime(date, timeValue, timezone) {
+  // Convert time to string if it's a Time object
+  let timeString;
+  
+  if (typeof timeValue === 'string') {
+    timeString = timeValue;
+  } else if (timeValue instanceof Date) {
+    // If it's a Date object, extract time
+    timeString = timeValue.toTimeString().split(' ')[0];
+  } else if (timeValue && typeof timeValue === 'object') {
+    // If it's a Time object with hours/minutes properties
+    const hours = String(timeValue.hours || timeValue.hour || 0).padStart(2, '0');
+    const minutes = String(timeValue.minutes || timeValue.minute || 0).padStart(2, '0');
+    timeString = `${hours}:${minutes}:00`;
+  } else {
+    console.error('Invalid timeValue:', timeValue);
+    timeString = '00:00:00';
+  }
+
   const [hours, minutes, seconds = '00'] = timeString.split(':');
   const dateStr = moment(date).format('YYYY-MM-DD');
+  
   return moment.tz(
     `${dateStr} ${hours}:${minutes}:${seconds}`,
     'YYYY-MM-DD HH:mm:ss',
