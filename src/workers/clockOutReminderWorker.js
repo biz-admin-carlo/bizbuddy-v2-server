@@ -3,15 +3,31 @@ const cron = require("node-cron");
 const { prisma } = require("@config/connection");
 const { getIO } = require("@config/socket");
 const { getMessaging } = require("@config/firebase");
+const moment = require("moment-timezone");
 
-function combineDateWithTime(referenceDate, timeLikeDate) {
-  // Prisma returns @db.Time as a Date with a UTC time component.
-  // We read its UTC hours/minutes and set them on the reference date.
-  const ref = new Date(referenceDate);
+function timeStrFromDbTime(timeLikeDate) {
   const t = new Date(timeLikeDate);
-  ref.setSeconds(0, 0);
-  ref.setHours(t.getUTCHours(), t.getUTCMinutes(), 0, 0);
-  return ref;
+  const hh = String(t.getUTCHours()).padStart(2, "0");
+  const mm = String(t.getUTCMinutes()).padStart(2, "0");
+  const ss = String(t.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function dateKeyInTz(date, tz) {
+  return moment(date).tz(tz).format("YYYY-MM-DD");
+}
+
+function normalizeTimezone(preferredTz, fallbackTz) {
+  const tz = preferredTz || fallbackTz || "America/Los_Angeles";
+  if (moment.tz.zone(tz)) return tz;
+  if (fallbackTz && moment.tz.zone(fallbackTz)) return fallbackTz;
+  return "America/Los_Angeles";
+}
+
+function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
+  const dateOnly = dateKeyInTz(referenceDate, tz);
+  const timeStr = timeStrFromDbTime(timeLikeDate);
+  return moment.tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz).toDate();
 }
 
 async function processClockOutReminders() {
@@ -25,30 +41,70 @@ async function processClockOutReminders() {
   if (!activeLogs.length) return;
 
   const io = getIO();
+  const companyTzCache = new Map();
+  async function getCompanyTimezone(companyId) {
+    if (!companyId) return "America/Los_Angeles";
+    if (companyTzCache.has(companyId)) return companyTzCache.get(companyId);
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { timeZone: true },
+    });
+    const tz = company?.timeZone || "America/Los_Angeles";
+    companyTzCache.set(companyId, tz);
+    return tz;
+  }
 
   for (const log of activeLogs) {
     try {
-      // Determine the user's shift for the day they clocked in
-      const dayStart = new Date(log.timeIn);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setHours(23, 59, 59, 999);
-
-      const userShift = await prisma.userShift.findFirst({
+      // Find the shift assignment for this timelog without relying on server-local midnight.
+      const windowStart = new Date(log.timeIn.getTime() - 36 * 60 * 60 * 1000);
+      const windowEnd = new Date(log.timeIn.getTime() + 36 * 60 * 60 * 1000);
+      const candidates = await prisma.userShift.findMany({
         where: {
           userId: log.userId,
-          assignedDate: { gte: dayStart, lte: dayEnd },
+          assignedDate: { gte: windowStart, lte: windowEnd },
         },
         include: { shift: true },
       });
 
+      let userShift = null;
+      if (candidates.length) {
+        // Prefer same "date" as timeIn in the effective timezone.
+        for (const us of candidates) {
+          const companyTz = await getCompanyTimezone(us.shift?.companyId);
+          const tz = normalizeTimezone(us.shift?.timeZone, companyTz);
+          if (dateKeyInTz(us.assignedDate, tz) === dateKeyInTz(log.timeIn, tz)) {
+            userShift = us;
+            break;
+          }
+        }
+        // Fallback: closest assignedDate.
+        if (!userShift) {
+          candidates.sort(
+            (a, b) =>
+              Math.abs(new Date(a.assignedDate).getTime() - log.timeIn.getTime()) -
+              Math.abs(new Date(b.assignedDate).getTime() - log.timeIn.getTime())
+          );
+          userShift = candidates[0];
+        }
+      }
+
       if (!userShift?.shift) continue;
 
-      const shiftStart = combineDateWithTime(
-        log.timeIn,
-        userShift.shift.startTime
+      const companyTz = await getCompanyTimezone(userShift.shift.companyId);
+      const tz = normalizeTimezone(userShift.shift.timeZone, companyTz);
+      const referenceDate = userShift.assignedDate || log.timeIn;
+
+      const shiftStart = combineDateWithTimeTz(
+        referenceDate,
+        userShift.shift.startTime,
+        tz
       );
-      let shiftEnd = combineDateWithTime(log.timeIn, userShift.shift.endTime);
+      let shiftEnd = combineDateWithTimeTz(
+        referenceDate,
+        userShift.shift.endTime,
+        tz
+      );
 
       // Handle shifts that cross midnight (end on the next calendar day)
       if (userShift.shift.crossesMidnight && shiftEnd <= shiftStart) {
