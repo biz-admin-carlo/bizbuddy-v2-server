@@ -3,29 +3,45 @@ const cron = require("node-cron");
 const { prisma } = require("@config/connection");
 const { getIO } = require("@config/socket");
 const { getMessaging } = require("@config/firebase");
+const moment = require("moment-timezone");
 
-function combineDateWithTime(referenceDate, timeLikeDate) {
-  const ref = new Date(referenceDate);
+function timeStrFromDbTime(timeLikeDate) {
   const t = new Date(timeLikeDate);
-  ref.setSeconds(0, 0);
-  ref.setHours(t.getUTCHours(), t.getUTCMinutes(), 0, 0);
-  return ref;
+  const hh = String(t.getUTCHours()).padStart(2, "0");
+  const mm = String(t.getUTCMinutes()).padStart(2, "0");
+  const ss = String(t.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function dateKeyInTz(date, tz) {
+  return moment(date).tz(tz).format("YYYY-MM-DD");
+}
+
+function normalizeTimezone(preferredTz, fallbackTz) {
+  const tz = preferredTz || fallbackTz || "America/Los_Angeles";
+  if (moment.tz.zone(tz)) return tz;
+  if (fallbackTz && moment.tz.zone(fallbackTz)) return fallbackTz;
+  return "America/Los_Angeles";
+}
+
+function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
+  const dateOnly = dateKeyInTz(referenceDate, tz);
+  const timeStr = timeStrFromDbTime(timeLikeDate);
+  return moment.tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz).toDate();
 }
 
 async function processClockInReminders() {
   const now = new Date();
 
-  // Define today's window
-  const dayStart = new Date(now);
-  dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart);
-  dayEnd.setHours(23, 59, 59, 999);
+  // Query a broad window to avoid relying on server-local midnight (companies can have different timezones).
+  const windowStart = new Date(now.getTime() - 36 * 60 * 60 * 1000);
+  const windowEnd = new Date(now.getTime() + 36 * 60 * 60 * 1000);
 
-  // Fetch today's user shifts with users (for deviceToken)
+  // Fetch candidate user shifts with users (for deviceToken)
   const todaysUserShifts = await prisma.userShift.findMany({
-    where: { assignedDate: { gte: dayStart, lte: dayEnd } },
+    where: { assignedDate: { gte: windowStart, lte: windowEnd } },
     include: {
-      shift: true,
+      shift: { select: { startTime: true, timeZone: true, companyId: true } },
       user: { select: { id: true, deviceToken: true } },
     },
   });
@@ -42,15 +58,32 @@ async function processClockInReminders() {
   });
   const activeSet = new Set(activeLogs.map((l) => l.userId));
 
+  // Cache company timezones to avoid repeated DB lookups
+  const companyTzCache = new Map();
+  async function getCompanyTimezone(companyId) {
+    if (!companyId) return "America/Los_Angeles";
+    if (companyTzCache.has(companyId)) return companyTzCache.get(companyId);
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { timeZone: true },
+    });
+    const tz = company?.timeZone || "America/Los_Angeles";
+    companyTzCache.set(companyId, tz);
+    return tz;
+  }
+
   for (const us of todaysUserShifts) {
     try {
       // Skip if already clocked in
       if (activeSet.has(us.userId)) continue;
 
-      const shiftStart = combineDateWithTime(
-        us.assignedDate,
-        us.shift.startTime
-      );
+      const companyTz = await getCompanyTimezone(us.shift?.companyId);
+      const tz = normalizeTimezone(us.shift?.timeZone, companyTz);
+
+      // Only consider shifts whose assignedDate matches "today" for that timezone.
+      if (dateKeyInTz(us.assignedDate, tz) !== dateKeyInTz(now, tz)) continue;
+
+      const shiftStart = combineDateWithTimeTz(us.assignedDate, us.shift.startTime, tz);
       const minutesToStart = (shiftStart.getTime() - now.getTime()) / 60000;
       if (minutesToStart <= 0) continue; // already started
 
