@@ -2,6 +2,8 @@
 
 const express = require("express");
 const cors = require("cors");
+const morganMiddleware = require("@middlewares/morganMiddleware");
+const { requestLogger } = require("@middlewares/requestLogger");
 const cookieParser = require("cookie-parser");
 
 const app = express();
@@ -17,6 +19,9 @@ app.use(
 );
 
 app.use(cookieParser());
+
+app.use(morganMiddleware);
+app.use(requestLogger);
 
 app.use((req, res, next) => {
   if (req.originalUrl.startsWith("/api/payments/stripe-webhook")) {

@@ -6,12 +6,14 @@ dotenv.config();
 const app = require("./app.js");
 const { connect } = require("@config/connection");
 const router = require("@routes/index.js");
+const { errorLogger } = require("@middlewares/requestLogger");
 const errorHandler = require("@middlewares/errorHandler");
 const http = require("http");
 
 const PORT = process.env.PORT || 5000;
 
 app.use("/api", router);
+app.use(errorLogger);
 app.use(errorHandler);
 
 const server = http.createServer(app);
@@ -54,6 +56,8 @@ connect()
       console.log(`📧 Notifications: ${process.env.NOTIFICATION_SMTP_USER || 'Not configured'}`);
       console.log(`🌐 Client: ${process.env.CLIENT_URL || 'Not configured'}`);
       console.log(`🔥 Firebase: Initialized`);
+      console.log(`📝 Logging: Enabled (Winston + Morgan)`); 
+      console.log(`📊 Request Logging: Database enabled`);  
       console.log(`\n📋 Active Workers:`);
       console.log(`   ✅ Leave Accrual`);
       console.log(`   ✅ Clock-In Reminders (30 min before shift)`);

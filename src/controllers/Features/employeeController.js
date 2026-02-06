@@ -9,10 +9,9 @@ const getAllEmployees = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({ error: "No company associated with the employee." });
     }
+    
     const employees = await prisma.user.findMany({
-      where: {
-        companyId,
-      },
+      where: { companyId },
       select: {
         id: true,
         email: true,
@@ -32,7 +31,22 @@ const getAllEmployees = async (req, res) => {
           },
         },
         department: {
-          select: { id: true, name: true },
+          select: { 
+            id: true, 
+            name: true,
+            supervisor: {  
+              select: {
+                id: true,
+                email: true,
+                profile: {
+                  select: {
+                    firstName: true,
+                    lastName: true
+                  }
+                }
+              }
+            }
+          },
         },
         company: {
           select: { id: true, name: true },
@@ -46,14 +60,24 @@ const getAllEmployees = async (req, res) => {
             workLocation: true,
             probationEndDate: true,
             timeZone: true,
-            supervisor: {
-              select: { id: true, email: true },
+            supervisor: {  
+              select: { 
+                id: true, 
+                email: true,
+                profile: {
+                  select: {
+                    firstName: true,
+                    lastName: true
+                  }
+                }
+              },
             },
           },
         },
       },
       orderBy: { id: "asc" },
     });
+    
     return res.status(200).json({ data: employees, message: "Employees retrieved successfully." });
   } catch (error) {
     console.error("Error in getAllEmployees:", error);
@@ -63,7 +87,13 @@ const getAllEmployees = async (req, res) => {
 
 const createEmployee = async (req, res) => {
   try {
-    let { email, username, password, role, firstName, lastName, phone, status, departmentId, companyId, hireDate, employeeId } = req.body;
+    let { 
+      email, username, password, role, firstName, lastName, phone, status, 
+      departmentId, companyId, hireDate, employeeId,
+      jobTitle, employmentStatus, exemptStatus, employmentType, 
+      workLocation, probationEndDate, timeZone, workState, supervisorId
+    } = req.body;
+    
     if (!email || !password || !firstName || !lastName) {
       return res.status(400).json({ error: "Email, password, first name, and last name are required." });
     }
@@ -74,15 +104,22 @@ const createEmployee = async (req, res) => {
 
     const existingUsername = await prisma.user.findUnique({ where: { username: cleanedUsername } });
     if (existingUsername) return res.status(409).json({ error: "Username already exists." });
-    const existingEmail = await prisma.user.findFirst({ where: { email: cleanedEmail, companyId: req.user.companyId } });
+    
+    const existingEmail = await prisma.user.findFirst({ 
+      where: { email: cleanedEmail, companyId: req.user.companyId } 
+    });
     if (existingEmail) return res.status(409).json({ error: "Employee already exists with this email in your company." });
+    
     if (cleanedEmployeeId) {
-      const existingEmployeeId = await prisma.user.findFirst({ where: { employeeId: cleanedEmployeeId, companyId: req.user.companyId } });
+      const existingEmployeeId = await prisma.user.findFirst({ 
+        where: { employeeId: cleanedEmployeeId, companyId: req.user.companyId } 
+      });
       if (existingEmployeeId) return res.status(409).json({ error: "Employee ID already exists in your company." });
     }
 
     const hashedPassword = bcrypt.hashSync(password, 10);
     let targetCompanyId = req.user.companyId;
+    
     if (req.user.role === "superadmin" && companyId) {
       const companyExists = await prisma.company.findUnique({ where: { id: companyId } });
       if (!companyExists) return res.status(400).json({ error: "Invalid company ID provided." });
@@ -94,6 +131,25 @@ const createEmployee = async (req, res) => {
       parsedHireDate = new Date(hireDate);
       if (isNaN(parsedHireDate.getTime())) return res.status(400).json({ error: "Invalid hire date format." });
     }
+
+    let parsedProbationEndDate = null;
+    if (probationEndDate) {
+      parsedProbationEndDate = new Date(probationEndDate);
+      if (isNaN(parsedProbationEndDate.getTime())) return res.status(400).json({ error: "Invalid probation end date format." });
+    }
+
+    // Build employment detail data object
+    const employmentDetailData = {};
+    if (jobTitle) employmentDetailData.jobTitle = jobTitle.trim();
+    if (employmentStatus) employmentDetailData.employmentStatus = employmentStatus;
+    if (exemptStatus) employmentDetailData.exemptStatus = exemptStatus;
+    if (employmentType) employmentDetailData.employmentType = employmentType;
+    if (workLocation) employmentDetailData.workLocation = workLocation;
+    if (parsedProbationEndDate) employmentDetailData.probationEndDate = parsedProbationEndDate;
+    if (timeZone) employmentDetailData.timeZone = timeZone;
+    if (workState) employmentDetailData.workState = workState;
+    if (departmentId) employmentDetailData.departmentId = departmentId;
+    if (supervisorId) employmentDetailData.supervisorId = supervisorId;
 
     const newEmployee = await prisma.user.create({
       data: {
@@ -115,6 +171,11 @@ const createEmployee = async (req, res) => {
             email: cleanedEmail,
           },
         },
+        ...(Object.keys(employmentDetailData).length > 0 ? {
+          employmentDetail: {
+            create: employmentDetailData
+          }
+        } : {}),
       },
       select: {
         id: true,
@@ -126,11 +187,30 @@ const createEmployee = async (req, res) => {
         employeeId: true,
         createdAt: true,
         updatedAt: true,
-        profile: { select: { firstName: true, lastName: true, phoneNumber: true, username: true } },
-        company: { select: { id: true, name: true } },
-        department: { select: { id: true, name: true } },
+        profile: { 
+          select: { firstName: true, lastName: true, phoneNumber: true, username: true } 
+        },
+        company: { 
+          select: { id: true, name: true } 
+        },
+        department: { 
+          select: { id: true, name: true } 
+        },
+        employmentDetail: {
+          select: {
+            jobTitle: true,
+            employmentStatus: true,
+            exemptStatus: true,
+            employmentType: true,
+            workLocation: true,
+            probationEndDate: true,
+            timeZone: true,
+            workState: true,
+          }
+        },
       },
     });
+    
     return res.status(201).json({ data: newEmployee, message: "Employee created successfully." });
   } catch (error) {
     console.error("Error in createEmployee:", error);
@@ -408,17 +488,45 @@ const getEmployeeById = async (req, res) => {
         email: true,
         username: true,
         role: true,
+        status: true,
+        hireDate: true,
+        employeeId: true,
         companyId: true,
+        createdAt: true,
+        updatedAt: true,
         profile: {
           select: {
             firstName: true,
             lastName: true,
             phoneNumber: true,
             username: true,
+            dateOfBirth: true,
+            ssnItin: true,
+            addressLine: true,
+            city: true,
+            state: true,
+            postalCode: true,
+            emergencyContactName: true,
+            emergencyContactPhone: true,
           },
         },
         department: {
-          select: { id: true, name: true },
+          select: { 
+            id: true, 
+            name: true,
+            supervisor: {  
+              select: {
+                id: true,
+                email: true,
+                profile: {
+                  select: {
+                    firstName: true,
+                    lastName: true
+                  }
+                }
+              }
+            }
+          },
         },
         company: {
           select: { id: true, name: true },
@@ -432,17 +540,32 @@ const getEmployeeById = async (req, res) => {
             workLocation: true,
             probationEndDate: true,
             timeZone: true,
-            supervisor: { select: { id: true, email: true } },
+            workState: true,
+            supervisor: {
+              select: { 
+                id: true, 
+                email: true,
+                profile: {
+                  select: {
+                    firstName: true,
+                    lastName: true
+                  }
+                }
+              },
+            },
           },
         },
       },
     });
+    
     if (!employee) {
       return res.status(404).json({ error: "Employee not found." });
     }
+    
     if (req.user.role !== "superadmin" && employee.companyId !== req.user.companyId) {
       return res.status(403).json({ error: "Unauthorized request." });
     }
+    
     return res.status(200).json({ data: employee, message: "Employee retrieved successfully." });
   } catch (error) {
     console.error("Error in getEmployeeById:", error);

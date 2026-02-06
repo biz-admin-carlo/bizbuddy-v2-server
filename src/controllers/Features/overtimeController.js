@@ -192,7 +192,18 @@ const getMyOT = async (req, res) => {
       where: { requesterId: req.user.id },
       include: {
         timeLog: true,
-        approver: { select: { id: true, email: true } },
+        approver: { 
+          select: { 
+            id: true, 
+            email: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true
+              }
+            }
+          } 
+        },
       },
       orderBy: { createdAt: "desc" },
     });
