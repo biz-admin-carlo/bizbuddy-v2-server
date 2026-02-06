@@ -2,6 +2,7 @@
 
 const { prisma } = require("@config/connection");
 const generatePayslipPDF = require('@utils/generatePayslipPDF');
+const calculateYTD = require('@utils/calculateYTD');
 
 exports.getEmployeeList = async (req, res) => {
   try {
@@ -517,7 +518,17 @@ exports.generatePayslipPDF = async (req, res) => {
     const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
     const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
 
-    const pdfBuffer = await generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes);
+    // ✅ NEW: Calculate YTD
+    const ytd = await calculateYTD(employeeId, companyId, payrollRun.periodEnd);
+
+    const pdfBuffer = await generatePayslipPDF(
+      payrollRun, 
+      employee, 
+      company, 
+      earningTypes, 
+      deductionTypes,
+      ytd // ✅ Pass YTD data
+    );
 
     const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
     const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0];
@@ -600,7 +611,7 @@ exports.getMyPayslips = async (req, res) => {
 exports.getMyPayslipPDF = async (req, res) => {
   try {
     const { payrollRunId } = req.params;
-    const userId = req.user.userId || req.user.id; // ✅ From token
+    const userId = req.user.userId || req.user.id;
     const { companyId } = req.user;
 
     const payrollRun = await prisma.payrollRun.findFirst({
@@ -631,7 +642,17 @@ exports.getMyPayslipPDF = async (req, res) => {
     const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
     const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
 
-    const pdfBuffer = await generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes);
+    // ✅ NEW: Calculate YTD
+    const ytd = await calculateYTD(userId, companyId, payrollRun.periodEnd);
+
+    const pdfBuffer = await generatePayslipPDF(
+      payrollRun, 
+      employee, 
+      company, 
+      earningTypes, 
+      deductionTypes,
+      ytd // ✅ Pass YTD data
+    );
 
     const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
     const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0];
@@ -740,8 +761,18 @@ exports.generateCheckPDF = async (req, res) => {
     const earningTypes = payrollRun.payrollSnapshot.earningTypes || [];
     const deductionTypes = payrollRun.payrollSnapshot.deductionTypes || [];
 
+    // ✅ NEW: Calculate YTD
+    const ytd = await calculateYTD(employeeId, companyId, payrollRun.periodEnd);
+
     const generateCheckPDF = require('@utils/generateCheckPDF');
-    const pdfBuffer = await generateCheckPDF(payrollRun, employee, company, earningTypes, deductionTypes);
+    const pdfBuffer = await generateCheckPDF(
+      payrollRun, 
+      employee, 
+      company, 
+      earningTypes, 
+      deductionTypes,
+      ytd // ✅ Pass YTD data
+    );
 
     const cleanName = employee.employeeName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
     const filename = `Check_${employee.checkNumber}_${cleanName}.pdf`;

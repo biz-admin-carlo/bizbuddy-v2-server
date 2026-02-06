@@ -182,3 +182,391 @@ exports.getAdminAnalytics = async (req, res) => {
     return res.status(500).json({ message: "Internal server error." });
   }
 };
+
+exports.getAdminAnalyticsDashboard = async (req, res) => {
+  try {
+    const { period = 'this_month', startDate, endDate } = req.query;
+    const companyId = req.user.companyId;
+
+    if (!companyId) {
+      return res.status(403).json({ message: "Unauthorized: No company context" });
+    }
+
+    // Get company with timezone
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { timeZone: true },
+    });
+
+    const timezone = company?.timeZone || 'America/Los_Angeles';
+
+    // Calculate date range based on period
+    let rangeStart, rangeEnd, rangeLabel;
+    const now = new Date();
+
+    switch (period) {
+      case 'last_7_days':
+        rangeEnd = new Date(now);
+        rangeStart = new Date(now);
+        rangeStart.setDate(rangeStart.getDate() - 6);
+        rangeLabel = 'Last 7 days';
+        break;
+
+      case 'last_14_days':
+        rangeEnd = new Date(now);
+        rangeStart = new Date(now);
+        rangeStart.setDate(rangeStart.getDate() - 13);
+        rangeLabel = 'Last 14 days';
+        break;
+
+      case 'last_28_days':
+        rangeEnd = new Date(now);
+        rangeStart = new Date(now);
+        rangeStart.setDate(rangeStart.getDate() - 27);
+        rangeLabel = 'Last 28 days';
+        break;
+
+      case 'last_month':
+        rangeEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+        rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        rangeLabel = rangeStart.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        break;
+
+      case 'this_month':
+      default:
+        rangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        rangeLabel = rangeStart.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        break;
+
+      case 'custom':
+        if (!startDate || !endDate) {
+          return res.status(400).json({ message: "startDate and endDate required for custom period" });
+        }
+        rangeStart = new Date(startDate);
+        rangeEnd = new Date(endDate);
+        
+        if (rangeStart > rangeEnd) {
+          return res.status(400).json({ message: "startDate must be before endDate" });
+        }
+        
+        // Note: daysDiff validation happens after this switch statement
+        rangeLabel = `${rangeStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} - ${rangeEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+        break;
+    }
+
+    rangeStart.setHours(0, 0, 0, 0);
+    rangeEnd.setHours(23, 59, 59, 999);
+
+    // Calculate daysDiff for all periods (needed for chart formatting)
+    const daysDiff = Math.ceil((rangeEnd - rangeStart) / (1000 * 60 * 60 * 24));
+
+    // Validate custom range limit (180 days max)
+    if (period === 'custom' && daysDiff > 180) {
+      return res.status(400).json({ message: "Date range cannot exceed 180 days" });
+    }
+
+    // Parallel data fetching with date filters
+    const [departments, employees, timelogs, userShifts, leaves, subscription] = await Promise.all([
+      // Departments count
+      prisma.department.count({ where: { companyId } }),
+
+      // Active employees with department info
+      prisma.user.findMany({
+        where: { 
+          companyId,
+          status: 'active',
+        },
+        select: {
+          id: true,
+          username: true,
+          departmentId: true,
+          department: { select: { name: true } },
+        },
+      }),
+
+      // Timelogs within date range
+      prisma.timeLog.findMany({
+        where: {
+          user: { companyId },
+          timeIn: { gte: rangeStart, lte: rangeEnd },
+        },
+        select: {
+          id: true,
+          userId: true,
+          timeIn: true,
+          timeOut: true,
+        },
+        orderBy: { timeIn: 'asc' },
+      }),
+
+      // User shifts within date range
+      prisma.userShift.findMany({
+        where: {
+          user: { companyId },
+          assignedDate: { gte: rangeStart, lte: rangeEnd },
+        },
+        include: {
+          shift: { select: { startTime: true, endTime: true } },
+        },
+      }),
+
+      // Leaves within date range
+      prisma.leave.findMany({
+        where: {
+          User: { companyId },
+          OR: [
+            { startDate: { gte: rangeStart, lte: rangeEnd } },
+            { endDate: { gte: rangeStart, lte: rangeEnd } },
+          ],
+        },
+        select: {
+          id: true,
+          userId: true,
+          leaveType: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+        },
+      }),
+
+      // Active subscription
+      prisma.subscription.findFirst({
+        where: { companyId, active: true },
+        include: { plan: { select: { name: true } } },
+      }),
+    ]);
+
+    // Helper functions
+    const diffHours = (isoA, isoB) => (isoA && isoB ? (new Date(isoB) - new Date(isoA)) / 36e5 : 0);
+    const monthKey = (iso) => new Date(iso).toISOString().slice(0, 7);
+    const dayKey = (iso) => new Date(iso).toISOString().slice(0, 10);
+
+    // === KPI CALCULATIONS ===
+
+    // 1. Active staff per month/day (based on period length)
+    const activeByPeriod = {};
+    timelogs.forEach((l) => {
+      const key = daysDiff <= 31 ? dayKey(l.timeIn) : monthKey(l.timeIn);
+      (activeByPeriod[key] ??= new Set()).add(l.userId);
+    });
+    const activeStaffData = Object.entries(activeByPeriod)
+      .sort()
+      .map(([period, ids]) => ({ 
+        period, 
+        count: ids.size,
+        label: daysDiff <= 31 ? period.slice(5) : period // Format: "12-25" or "2024-12"
+      }));
+
+    // 2. Hours: Scheduled vs Actual
+    const schedHoursByUser = {};
+    const actualHoursByUser = {};
+
+    userShifts.forEach((us) => {
+      const key = `${us.userId}_${dayKey(us.assignedDate)}`;
+      const hours = diffHours(us.shift.startTime, us.shift.endTime);
+      schedHoursByUser[key] = (schedHoursByUser[key] || 0) + hours;
+    });
+
+    timelogs.forEach((l) => {
+      if (!l.timeOut) return;
+      const key = `${l.userId}_${dayKey(l.timeIn)}`;
+      const hours = diffHours(l.timeIn, l.timeOut);
+      actualHoursByUser[key] = (actualHoursByUser[key] || 0) + hours;
+    });
+
+    const allDays = new Set([
+      ...Object.keys(schedHoursByUser).map(k => k.split('_')[1]),
+      ...Object.keys(actualHoursByUser).map(k => k.split('_')[1]),
+    ]);
+
+    const hoursComparisonData = [...allDays].sort().map((day) => {
+      const scheduled = Object.entries(schedHoursByUser)
+        .filter(([k]) => k.endsWith(`_${day}`))
+        .reduce((sum, [, v]) => sum + v, 0);
+      const actual = Object.entries(actualHoursByUser)
+        .filter(([k]) => k.endsWith(`_${day}`))
+        .reduce((sum, [, v]) => sum + v, 0);
+      
+      return {
+        date: day,
+        scheduled: Number(scheduled.toFixed(2)),
+        actual: Number(actual.toFixed(2)),
+      };
+    });
+
+    // 3. Attendance Metrics
+    let lateCount = 0;
+    let earlyLeaveCount = 0;
+    const shiftLookup = {};
+    
+    userShifts.forEach((us) => {
+      shiftLookup[`${us.userId}_${dayKey(us.assignedDate)}`] = {
+        start: us.shift.startTime,
+        end: us.shift.endTime,
+      };
+    });
+
+    timelogs.forEach((log) => {
+      const key = `${log.userId}_${dayKey(log.timeIn)}`;
+      const shift = shiftLookup[key];
+      if (!shift) return;
+
+      const clockInTime = new Date(log.timeIn);
+      const shiftStart = new Date(shift.start);
+      shiftStart.setFullYear(clockInTime.getFullYear(), clockInTime.getMonth(), clockInTime.getDate());
+
+      if (clockInTime > shiftStart) lateCount++;
+
+      if (log.timeOut) {
+        const clockOutTime = new Date(log.timeOut);
+        const shiftEnd = new Date(shift.end);
+        shiftEnd.setFullYear(clockOutTime.getFullYear(), clockOutTime.getMonth(), clockOutTime.getDate());
+        
+        if (clockOutTime < shiftEnd) earlyLeaveCount++;
+      }
+    });
+
+    const totalScheduledShifts = userShifts.length || 1;
+    const lateRate = ((lateCount / totalScheduledShifts) * 100).toFixed(1);
+    const earlyRate = ((earlyLeaveCount / totalScheduledShifts) * 100).toFixed(1);
+    const onTimeCount = Math.max(0, totalScheduledShifts - lateCount - earlyLeaveCount);
+    const reliabilityRate = ((onTimeCount / totalScheduledShifts) * 100).toFixed(1);
+
+    // 4. Coverage Rate
+    const coveredShifts = userShifts.filter((us) =>
+      timelogs.some((l) => l.userId === us.userId && dayKey(l.timeIn) === dayKey(us.assignedDate))
+    ).length;
+    const coverageRate = ((coveredShifts / totalScheduledShifts) * 100).toFixed(1);
+
+    // 5. Leave Analytics
+    const leaveByType = {};
+    const approvedLeaves = leaves.filter(l => l.status === 'approved');
+    
+    approvedLeaves.forEach((lv) => {
+      const days = Math.max(1, diffHours(lv.startDate, lv.endDate) / 8);
+      leaveByType[lv.leaveType] = (leaveByType[lv.leaveType] || 0) + days;
+    });
+
+    const totalLeaveRequests = leaves.length || 1;
+    const leaveApprovalRate = ((approvedLeaves.length / totalLeaveRequests) * 100).toFixed(1);
+
+    const leaveDistribution = [
+      { name: 'Approved', value: approvedLeaves.length },
+      { name: 'Pending/Rejected', value: totalLeaveRequests - approvedLeaves.length },
+    ];
+
+    const leaveByTypeData = Object.entries(leaveByType).map(([type, days]) => ({
+      type,
+      days: Number(days.toFixed(1)),
+    }));
+
+    // 6. Overtime Analysis
+    const overtimeByDept = {};
+    const overtimeOverTime = {};
+
+    Object.keys(schedHoursByUser).forEach((key) => {
+      const [userId, date] = key.split('_');
+      const scheduled = schedHoursByUser[key] || 0;
+      const actual = actualHoursByUser[key] || 0;
+      const overtime = Math.max(0, actual - scheduled);
+      
+      if (overtime === 0) return;
+
+      const employee = employees.find(e => e.id === userId);
+      const deptName = employee?.department?.name || 'Unassigned';
+      
+      overtimeByDept[deptName] = (overtimeByDept[deptName] || 0) + overtime;
+      
+      const periodKey = daysDiff <= 31 ? date : monthKey(date);
+      overtimeOverTime[periodKey] = (overtimeOverTime[periodKey] || 0) + overtime;
+    });
+
+    const overtimeByDeptData = Object.entries(overtimeByDept)
+      .map(([dept, hours]) => ({ dept, hours: Number(hours.toFixed(2)) }))
+      .sort((a, b) => b.hours - a.hours);
+
+    const overtimeTrendData = Object.entries(overtimeOverTime)
+      .sort()
+      .map(([period, hours]) => ({
+        period,
+        hours: Number(hours.toFixed(2)),
+        cost: Number((hours * 1.5 * 15).toFixed(2)), // Assuming $15/hr base rate
+      }));
+
+    // 7. Department Breakdown
+    const deptStats = {};
+    employees.forEach(emp => {
+      const deptName = emp.department?.name || 'Unassigned';
+      if (!deptStats[deptName]) {
+        deptStats[deptName] = { employees: 0, activeCount: 0, totalHours: 0 };
+      }
+      deptStats[deptName].employees++;
+    });
+
+    timelogs.forEach(log => {
+      const emp = employees.find(e => e.id === log.userId);
+      const deptName = emp?.department?.name || 'Unassigned';
+      if (deptStats[deptName]) {
+        deptStats[deptName].activeCount++;
+        if (log.timeOut) {
+          deptStats[deptName].totalHours += diffHours(log.timeIn, log.timeOut);
+        }
+      }
+    });
+
+    const departmentBreakdown = Object.entries(deptStats).map(([name, stats]) => ({
+      department: name,
+      employees: stats.employees,
+      activeEmployees: new Set(
+        timelogs
+          .filter(l => employees.find(e => e.id === l.userId)?.department?.name === name)
+          .map(l => l.userId)
+      ).size,
+      totalHours: Number(stats.totalHours.toFixed(2)),
+      avgHoursPerEmployee: Number((stats.totalHours / stats.employees).toFixed(2)),
+    }));
+
+    // === RESPONSE ===
+    return res.status(200).json({
+      data: {
+        summary: {
+          departments: departments,
+          totalEmployees: employees.length,
+          activePlan: subscription?.plan?.name || 'Free',
+          activeStaff: activeStaffData.at(-1)?.count || 0,
+          lateRate: parseFloat(lateRate),
+          earlyLeaveRate: parseFloat(earlyRate),
+          reliabilityRate: parseFloat(reliabilityRate),
+          coverageRate: parseFloat(coverageRate),
+          leaveApprovalRate: parseFloat(leaveApprovalRate),
+          totalHoursWorked: hoursComparisonData.reduce((sum, d) => sum + d.actual, 0),
+          totalOvertimeHours: overtimeTrendData.reduce((sum, d) => sum + d.hours, 0),
+        },
+        charts: {
+          activeStaff: activeStaffData,
+          hoursComparison: hoursComparisonData,
+          attendanceMetrics: {
+            lateRate: parseFloat(lateRate),
+            earlyRate: parseFloat(earlyRate),
+            reliabilityRate: parseFloat(reliabilityRate),
+          },
+          leaveDistribution,
+          leaveByType: leaveByTypeData,
+          overtimeByDepartment: overtimeByDeptData,
+          overtimeTrend: overtimeTrendData,
+          departmentBreakdown,
+        },
+        dateRange: {
+          start: rangeStart.toISOString().split('T')[0],
+          end: rangeEnd.toISOString().split('T')[0],
+          label: rangeLabel,
+          period: period,
+        },
+      },
+    });
+  } catch (e) {
+    console.error("getAdminAnalytics", e);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};

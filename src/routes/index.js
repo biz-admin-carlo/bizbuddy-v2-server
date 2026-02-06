@@ -35,6 +35,8 @@ const employeePayrollDetailsRoutes = require("@routes/PayrollSystem/employeePayr
 const cutOffDetailsRoutes = require("@routes/Features/cutoffPeriodRoutes");
 const notificationRoutes = require('./notificationRoutes');
 
+const systemAdminRoutes = require("@routes/Analytics/systemAdminRoutes");
+
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
 router.use("/departments", departmentsRoutes);
@@ -66,6 +68,9 @@ router.use("/company-information", companyInformationRoutes);
 router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
 router.use("/cutoff-periods", cutOffDetailsRoutes);
 router.use('/notifications', notificationRoutes);
+
+router.use("/analytics", analyticsRoutes);
+router.use("/system-admin", systemAdminRoutes);
 
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });

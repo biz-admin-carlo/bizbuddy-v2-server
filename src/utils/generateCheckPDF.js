@@ -1,6 +1,6 @@
 const PDFDocument = require('pdfkit');
 
-function generateCheckPDF(payrollRun, employee, company, earningTypes, deductionTypes) {
+function generateCheckPDF(payrollRun, employee, company, earningTypes, deductionTypes, ytd) {
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocument({ 
@@ -26,13 +26,12 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
 
       // ✅ USE CUSTOM POSITIONS OR DEFAULTS
       const defaultPositions = {
-        checkNumber: { x: 480, y: 40, fontSize: 10 },   // ✅ Moved up
-        date: { x: 480, y: 70, fontSize: 10 },          // ✅ Moved up
-        amountWords: { x: 90, y: 110, fontSize: 10 },   // ✅ Moved up
-        amountNumber: { x: 455, y: 108, fontSize: 14 }, // ✅ Moved up
-        payeeName: { x: 90, y: 145, fontSize: 11 },     // ✅ Moved up
-        payeeAddress: { x: 90, y: 160, fontSize: 9 },   // ✅ Moved up
-        memo: { x: 90, y: 200, fontSize: 9 },           // Optional memo line
+        date: { x: 480, y: 70, fontSize: 10 },
+        amountWords: { x: 90, y: 110, fontSize: 10 },
+        amountNumber: { x: 455, y: 108, fontSize: 14 },
+        payeeName: { x: 90, y: 145, fontSize: 11 },
+        payeeAddress: { x: 90, y: 160, fontSize: 9 },
+        memo: { x: 90, y: 200, fontSize: 9 },
       };
 
       const positions = company.checkPositions || defaultPositions;
@@ -51,6 +50,11 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
       const cents = Math.round((netPay % 1) * 100);
       const formattedAmount = formatCurrency(netPay);
       const employeeName = employee.employeeName || 'EMPLOYEE NAME MISSING';
+
+      // 1. CHECK NUMBER
+      // doc.fontSize(positions.checkNumber?.fontSize || 10)
+      //    .font('Helvetica-Bold')
+      //    .text(`Check #${employee.checkNumber}`, positions.checkNumber?.x || 480, positions.checkNumber?.y || 40);
 
       // 2. DATE
       doc.fontSize(positions.date?.fontSize || 10)
@@ -110,7 +114,7 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
 
       // ================== PANEL 2: EMPLOYEE PAY STUB ==================
       
-      renderPayStub(doc, PANEL_2_START, 'EMPLOYEE', payrollRun, employee, company, earningTypes, deductionTypes);
+      renderPayStub(doc, PANEL_2_START, 'EMPLOYEE', payrollRun, employee, company, earningTypes, deductionTypes, ytd);
 
       // ================== PERFORATED LINE (Panel 2 → Panel 3) ==================
       doc.fontSize(10).text('✂', 25, PANEL_3_START - 20);
@@ -121,7 +125,7 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
 
       // ================== PANEL 3: EMPLOYER PAY STUB (COPY) ==================
       
-      renderPayStub(doc, PANEL_3_START, 'EMPLOYER', payrollRun, employee, company, earningTypes, deductionTypes);
+      renderPayStub(doc, PANEL_3_START, 'EMPLOYER', payrollRun, employee, company, earningTypes, deductionTypes, ytd);
 
       doc.end();
     } catch (error) {
@@ -132,7 +136,31 @@ function generateCheckPDF(payrollRun, employee, company, earningTypes, deduction
 
 // ================== REUSABLE PAY STUB RENDERER ==================
 
-function renderPayStub(doc, startY, copyType, payrollRun, employee, company, earningTypes, deductionTypes) {
+function renderPayStub(doc, startY, copyType, payrollRun, employee, company, earningTypes, deductionTypes, ytd) {
+  // ✅ SAFE YTD with defaults
+  const safeYTD = ytd || {
+    grossEarnings: 0,
+    regularPay: 0,
+    regularHours: 0,
+    overtimePay: 0,
+    overtimeHours: 0,
+    ptoPay: 0,
+    ptoHours: 0,
+    federalTax: 0,
+    stateTax: 0,
+    fica: 0,
+    medicare: 0,
+    sdi: 0,
+    calSavers: 0,
+    totalTaxes: 0,
+    healthInsurance: 0,
+    dentalInsurance: 0,
+    retirement401k: 0,
+    totalDeductions: 0,
+    netPay: 0,
+    payPeriodsIncluded: 0,
+  };
+
   const payDateFormatted = new Date(payrollRun.payDate).toLocaleDateString('en-US', { 
     month: 'short', 
     day: '2-digit', 
@@ -221,19 +249,19 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
         doc.text(label, 60, currentY, { width: 80 });
         
         // Show hours for hourly types
-        let hoursValue = '0.00';
-        if (earningType?.code === 'regular_hours' && employee.hoursData?.regularHours) {
-          hoursValue = employee.hoursData.regularHours.toFixed(2);
-        } else if (earningType?.code === 'overtime' && employee.hoursData?.overtimeHours) {
-          hoursValue = employee.hoursData.overtimeHours.toFixed(2);
+        let hoursValue = '-';
+        const hoursField = `${earningTypeId}Hours`;
+        if (employee.earnings[hoursField]) {
+          hoursValue = parseFloat(employee.earnings[hoursField]).toFixed(2);
         }
         
         doc.text(hoursValue, 150, currentY, { width: 40, align: 'right' });
         doc.text(parseFloat(value).toFixed(2), 200, currentY, { width: 50, align: 'right' });
         
-        // YTD
-        const ytdAmount = employee.earningsYTD?.[earningTypeId] || 0;
-        doc.text(ytdAmount.toFixed(2), 260, currentY, { width: 60, align: 'right' });
+        // ✅ YTD from safeYTD object
+        const ytdField = earningTypeId.replace(/([A-Z])/g, (match) => match.toLowerCase());
+        const ytdAmount = safeYTD[ytdField] || safeYTD[`${ytdField}Pay`] || 0;
+        doc.text(parseFloat(ytdAmount).toFixed(2), 260, currentY, { width: 60, align: 'right' });
         
         currentY += 10;
       }
@@ -244,7 +272,7 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
   currentY += 5;
   doc.font('Helvetica-Bold').text('Gross Earnings', 60, currentY, { width: 80 });
   doc.text(parseFloat(employee.grossPay || 0).toFixed(2), 200, currentY, { width: 50, align: 'right' });
-  doc.text((employee.grossPayYTD || 0).toFixed(2), 260, currentY, { width: 60, align: 'right' });
+  doc.text(parseFloat(safeYTD.grossEarnings || 0).toFixed(2), 260, currentY, { width: 60, align: 'right' });
 
   // ====== DEDUCTIONS DATA (Right Column) ======
   currentY = dataStartY;
@@ -253,19 +281,22 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
   // Taxes
   if (employee.taxes) {
     const taxTypes = [
-      { key: 'federalTax', label: 'Fed Income Tax', ytdKey: 'federalTaxYTD' },
-      { key: 'fica', label: 'FICA', ytdKey: 'ficaYTD' },
-      { key: 'medicare', label: 'Medicare', ytdKey: 'medicareYTD' },
-      { key: 'stateTax', label: 'State Income Tax', ytdKey: 'stateTaxYTD' },
-      { key: 'sdi', label: 'SDI', ytdKey: 'sdiYTD' },
-      { key: 'calSavers', label: 'CalSavers', ytdKey: 'calSaversYTD' },
+      { key: 'federalTax', label: 'Fed Income Tax', ytdKey: 'federalTax' },
+      { key: 'fica', label: 'FICA', ytdKey: 'fica' },
+      { key: 'medicare', label: 'Medicare', ytdKey: 'medicare' },
+      { key: 'stateTax', label: 'State Income Tax', ytdKey: 'stateTax' },
+      { key: 'sdi', label: 'SDI', ytdKey: 'sdi' },
+      { key: 'calSavers', label: 'CalSavers', ytdKey: 'calSavers' },
     ];
 
     taxTypes.forEach(({ key, label, ytdKey }) => {
       if (employee.taxes[key] > 0) {
         doc.text(label, 350, currentY, { width: 90 });
         doc.text(parseFloat(employee.taxes[key]).toFixed(2), 450, currentY, { width: 50, align: 'right' });
-        doc.text((employee.taxesYTD?.[ytdKey] || 0).toFixed(2), 500, currentY, { width: 40, align: 'right' });
+        
+        // ✅ YTD from safeYTD object
+        const ytdAmount = safeYTD[ytdKey] || 0;
+        doc.text(parseFloat(ytdAmount).toFixed(2), 500, currentY, { width: 40, align: 'right' });
         currentY += 10;
       }
     });
@@ -281,8 +312,10 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
         doc.text(label, 350, currentY, { width: 90 });
         doc.text(parseFloat(value).toFixed(2), 450, currentY, { width: 50, align: 'right' });
         
-        const ytdAmount = employee.deductionsYTD?.[deductionTypeId] || 0;
-        doc.text(ytdAmount.toFixed(2), 500, currentY, { width: 40, align: 'right' });
+        // ✅ YTD from safeYTD object
+        const ytdField = deductionTypeId.replace(/([A-Z])/g, (match) => match.toLowerCase());
+        const ytdAmount = safeYTD[ytdField] || 0;
+        doc.text(parseFloat(ytdAmount).toFixed(2), 500, currentY, { width: 40, align: 'right' });
         currentY += 10;
       }
     });
@@ -291,7 +324,7 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
   // Total Deductions
   currentY += 5;
   const totalDeductions = parseFloat(employee.totalTaxes || 0) + parseFloat(employee.totalDeductions || 0);
-  const totalDeductionsYTD = parseFloat(employee.totalTaxesYTD || 0) + parseFloat(employee.totalDeductionsYTD || 0);
+  const totalDeductionsYTD = parseFloat(safeYTD.totalTaxes || 0) + parseFloat(safeYTD.totalDeductions || 0);
   
   doc.font('Helvetica-Bold').text('Total Deductions', 350, currentY, { width: 90 });
   doc.text(totalDeductions.toFixed(2), 450, currentY, { width: 50, align: 'right' });
@@ -304,7 +337,7 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
   
   doc.fontSize(9).font('Helvetica-Bold').text('Net Pay', 350, currentY, { width: 90 });
   doc.text(parseFloat(employee.netPay || 0).toFixed(2), 450, currentY, { width: 50, align: 'right' });
-  doc.text((employee.netPayYTD || 0).toFixed(2), 500, currentY, { width: 40, align: 'right' });
+  doc.text(parseFloat(safeYTD.netPay || 0).toFixed(2), 500, currentY, { width: 40, align: 'right' });
 
   // Bottom border
   currentY += 15;
@@ -313,7 +346,11 @@ function renderPayStub(doc, startY, copyType, payrollRun, employee, company, ear
   // ====== FOOTER ======
   currentY += 10;
   doc.fontSize(6).font('Helvetica').fillColor('#666');
-  doc.text(`Generated by BizBuddy • ${new Date().toLocaleDateString()}`, 50, currentY, { align: 'left', width: 495 });
+  doc.text(
+    `Generated by BizBuddy • ${new Date().toLocaleDateString()} • YTD: ${safeYTD.payPeriodsIncluded || 0} pay periods`, 
+    50, currentY, 
+    { align: 'left', width: 495 }
+  );
   doc.fillColor('#000');
 }
 

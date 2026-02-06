@@ -12,6 +12,7 @@ const {
   changePassword,
   getDeviceToken,
   updateDeviceToken,
+  getUserExportData
 } = require("@controllers/Account/accountSigninController");
 const {
   getAllSubscriptionPlans,
@@ -27,6 +28,7 @@ const {
 } = require("@controllers/Account/resetPasswordController");
 const deleteAccountController = require("@controllers/Account/accountDeleteController");
 
+router.get("/user-export-data", getUserExportData);
 router.get("/get-user-email", getUserEmail);
 router.get("/profile", getUserProfile);
 router.get("/approver", authenticate, getApprover);

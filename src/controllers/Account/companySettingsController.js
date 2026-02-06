@@ -257,56 +257,131 @@ exports.getCheckTemplates = async (req, res) => {
 
 exports.generateTestCheckPDF = async (req, res) => {
   try {
-    const { positions, mockData } = req.body;
     const { companyId } = req.user;
 
+    // Fetch company settings
     const company = await prisma.company.findUnique({
       where: { id: companyId },
-      select: { 
-        name: true, 
-        addressLine1: true, 
-        city: true, 
-        state: true, 
-        postalCode: true 
+      select: {
+        name: true,
+        addressLine1: true,
+        city: true,
+        state: true,
+        postalCode: true,
+        checkTemplate: true,
+        checkPositions: true,
       },
     });
 
-    // Mock employee data
-    const mockEmployee = {
-      employeeName: mockData.payeeName,
-      address: mockData.payeeAddress,
-      checkNumber: '6389',
-      netPay: parseFloat(mockData.amountNumber.replace(/,/g, '')),
-    };
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found',
+      });
+    }
 
-    // Mock payroll run
+    // ✅ CREATE MOCK PAYROLL DATA
     const mockPayrollRun = {
       payDate: new Date(),
-      periodStart: new Date(),
+      periodStart: new Date(new Date().setDate(new Date().getDate() - 14)),
       periodEnd: new Date(),
     };
 
-    // Temporarily override company positions for this test
-    const testCompany = {
-      ...company,
-      checkPositions: positions,
+    const mockEmployee = {
+      employeeId: 'TEST-001',
+      employeeName: 'John Sample Employee',
+      position: 'Software Engineer',
+      checkNumber: '1001',
+      
+      // Earnings
+      earnings: {
+        regularHours: 80,
+        regularPay: 2400.00,
+        overtimeHours: 5,
+        overtimePay: 225.00,
+      },
+      grossPay: 2625.00,
+      
+      // Taxes
+      taxes: {
+        federalTax: 315.00,
+        stateTax: 131.25,
+        fica: 162.75,
+        medicare: 38.06,
+        sdi: 28.88,
+      },
+      totalTaxes: 675.94,
+      
+      // Deductions
+      deductions: {
+        healthInsurance: 150.00,
+        retirement401k: 131.25,
+      },
+      totalDeductions: 281.25,
+      
+      // Net Pay
+      netPay: 1667.81,
+      
+      // Optional employee address for check
+      address: '123 Main Street',
+      city: 'Anytown',
+      state: 'CA',
+      postalCode: '12345',
     };
 
+    const mockEarningTypes = [
+      { id: 'regularHours', label: 'Regular Hours', code: 'regular_hours' },
+      { id: 'overtimeHours', label: 'Overtime Hours', code: 'overtime' },
+    ];
+
+    const mockDeductionTypes = [
+      { id: 'healthInsurance', label: 'Health Insurance' },
+      { id: 'retirement401k', label: '401(k) Contribution' },
+    ];
+
+    // ✅ ADD: Mock YTD data
+    const mockYTD = {
+      grossEarnings: 7875.00,    // 3 pay periods
+      regularPay: 7200.00,
+      overtimePay: 675.00,
+      
+      federalTax: 945.00,
+      stateTax: 393.75,
+      fica: 488.25,
+      medicare: 114.18,
+      sdi: 86.64,
+      totalTaxes: 2027.82,
+      
+      healthInsurance: 450.00,
+      retirement401k: 393.75,
+      totalDeductions: 843.75,
+      
+      netPay: 5003.43,
+      
+      payPeriodsIncluded: 3,
+    };
+
+    // ✅ PASS YTD TO GENERATOR
     const generateCheckPDF = require('@utils/generateCheckPDF');
     const pdfBuffer = await generateCheckPDF(
-      mockPayrollRun, 
-      mockEmployee, 
-      testCompany, 
-      [], // No earnings for test
-      []  // No deductions for test
+      mockPayrollRun,
+      mockEmployee,
+      company,
+      mockEarningTypes,
+      mockDeductionTypes,
+      mockYTD  // ✅ Pass YTD data
     );
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="Test_Check_Preview.pdf"');
+    res.setHeader('Content-Disposition', 'inline; filename="test_check.pdf"');
     res.send(pdfBuffer);
 
   } catch (error) {
     console.error('Error generating test check:', error);
-    res.status(500).json({ success: false, message: 'Failed to generate test check' });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate test check',
+      error: error.message,
+    });
   }
 };

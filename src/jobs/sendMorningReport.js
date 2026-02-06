@@ -8,6 +8,7 @@ const moment = require('moment-timezone');
  */
 async function sendMorningReportJob() {
   console.log('📊 Generating morning reports...');
+  console.log('⏰ Current server time:', new Date().toISOString());
 
   try {
     const companies = await prisma.company.findMany({
@@ -20,7 +21,12 @@ async function sendMorningReportJob() {
       },
     });
 
+    console.log(`📌 Found ${companies.length} companies with notifications enabled`);
+
     for (const company of companies) {
+      console.log(`\n🏢 Processing company: ${company.name}`);
+      console.log(`   Timezone: ${timezone}`);
+      console.log(`   Morning report time: ${company.morningReportTime}`);
       const timezone = company.timeZone || 'America/Los_Angeles';
       const now = moment().tz(timezone);
       const todayStart = now.clone().startOf('day');
@@ -94,6 +100,9 @@ async function sendMorningReportJob() {
           }
         }
       }
+
+      console.log(`   Missed clock-ins: ${missedClockIns.length}`);
+      console.log(`   Currently clocked in: ${currentlyClockedIn.length}`);
 
       // Send report only if there's something to report
       if (missedClockIns.length > 0 || currentlyClockedIn.length > 0) {

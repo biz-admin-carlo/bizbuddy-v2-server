@@ -1,149 +1,310 @@
 const PDFDocument = require('pdfkit');
 
-function generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes) {
-    return new Promise((resolve, reject) => {
-      try {
-        const doc = new PDFDocument({ margin: 50 });
-        const chunks = [];
-  
-        doc.on('data', chunk => chunks.push(chunk));
-        doc.on('end', () => resolve(Buffer.concat(chunks)));
-        doc.on('error', reject);
-  
-        // Header
-        doc.fontSize(20).font('Helvetica-Bold').text('PAYSLIP', { align: 'center' });
-        doc.moveDown();
-  
-        // Company Info
-        doc.fontSize(10).font('Helvetica').text(company.name || 'Company Name', { align: 'left' });
-        if (company.addressLine1) {
-          doc.fontSize(8).text(company.addressLine1, { align: 'left' });
+async function generatePayslipPDF(payrollRun, employee, company, earningTypes, deductionTypes, ytd) {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ margin: 40, size: 'LETTER' });
+      const chunks = [];
+
+      doc.on('data', chunk => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      // ============================================
+      // PROFESSIONAL HEADER WITH BOX
+      // ============================================
+      
+      // Top border box
+      doc.rect(40, 40, 532, 60).stroke();
+      
+      // Company name - bold and prominent
+      doc.fontSize(16).font('Helvetica-Bold').text(company.name || 'COMPANY NAME', 50, 50);
+      
+      // Company address
+      if (company.addressLine1) {
+        doc.fontSize(9).font('Helvetica').text(company.addressLine1, 50, 68);
+        if (company.city && company.state) {
+          doc.text(`${company.city}, ${company.state} ${company.postalCode || ''}`, 50, 80);
         }
-        doc.moveDown();
-  
-        // Employee & Period Info
-        doc.fontSize(12).font('Helvetica-Bold').text(employee.employeeName);
-        doc.fontSize(9).font('Helvetica').text(employee.position || 'Employee');
-        doc.moveDown();
-  
-        doc.fontSize(9);
-        doc.text(`Pay Period: ${new Date(payrollRun.periodStart).toLocaleDateString()} - ${new Date(payrollRun.periodEnd).toLocaleDateString()}`);
-        doc.text(`Pay Date: ${new Date(payrollRun.payDate).toLocaleDateString()}`);
-        doc.text(`Check Number: ${employee.checkNumber}`);
-        doc.moveDown();
-  
-        // Line separator
-        doc.strokeColor('#000').lineWidth(1).moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-        doc.moveDown();
-  
-        // ✅ FIX: Earnings Section with Labels
-        doc.fontSize(11).font('Helvetica-Bold').text('EARNINGS', { underline: true });
-        doc.moveDown(0.5);
-        doc.fontSize(9).font('Helvetica');
-  
-        if (employee.earnings && earningTypes) {
-          Object.entries(employee.earnings).forEach(([earningTypeId, value]) => {
-            if (value > 0) {
-              // Find the label from earningTypes
-              const earningType = earningTypes.find(et => et.id === earningTypeId);
-              const label = earningType ? earningType.label : 'Other Earning';
-              
-              doc.text(label, 50, doc.y, { continued: true, width: 400 });
-              doc.text(`$${parseFloat(value).toFixed(2)}`, { align: 'right' });
-            }
-          });
-        }
-  
-        doc.moveDown();
-        doc.font('Helvetica-Bold').text('Gross Pay', 50, doc.y, { continued: true, width: 400 });
-        doc.text(`$${parseFloat(employee.grossPay).toFixed(2)}`, { align: 'right' });
-        doc.moveDown();
-  
-        // Taxes Section
-        doc.fontSize(11).font('Helvetica-Bold').text('TAXES', { underline: true });
-        doc.moveDown(0.5);
-        doc.fontSize(9).font('Helvetica');
-  
-        if (employee.taxes) {
-          if (employee.taxes.federalTax > 0) {
-            doc.text('Federal Income Tax', 50, doc.y, { continued: true, width: 400 });
-            doc.text(`$${parseFloat(employee.taxes.federalTax).toFixed(2)}`, { align: 'right' });
-          }
-  
-          if (employee.taxes.stateTax > 0) {
-            doc.text('State Income Tax (CA)', 50, doc.y, { continued: true, width: 400 });
-            doc.text(`$${parseFloat(employee.taxes.stateTax).toFixed(2)}`, { align: 'right' });
-          }
-  
-          if (employee.taxes.fica > 0) {
-            doc.text('Social Security (FICA)', 50, doc.y, { continued: true, width: 400 });
-            doc.text(`$${parseFloat(employee.taxes.fica).toFixed(2)}`, { align: 'right' });
-          }
-  
-          if (employee.taxes.medicare > 0) {
-            doc.text('Medicare', 50, doc.y, { continued: true, width: 400 });
-            doc.text(`$${parseFloat(employee.taxes.medicare).toFixed(2)}`, { align: 'right' });
-          }
-  
-          if (employee.taxes.sdi > 0) {
-            doc.text('CA SDI', 50, doc.y, { continued: true, width: 400 });
-            doc.text(`$${parseFloat(employee.taxes.sdi).toFixed(2)}`, { align: 'right' });
-          }
-  
-          if (employee.taxes.calSavers > 0) {
-            doc.text('CalSavers', 50, doc.y, { continued: true, width: 400 });
-            doc.text(`$${parseFloat(employee.taxes.calSavers).toFixed(2)}`, { align: 'right' });
-          }
-        }
-  
-        doc.moveDown();
-        doc.font('Helvetica-Bold').text('Total Taxes', 50, doc.y, { continued: true, width: 400 });
-        doc.text(`$${parseFloat(employee.totalTaxes || 0).toFixed(2)}`, { align: 'right' });
-        doc.moveDown();
-  
-        // ✅ FIX: Deductions Section with Labels
-        if (employee.deductions && employee.totalDeductions > 0) {
-          doc.fontSize(11).font('Helvetica-Bold').text('DEDUCTIONS', { underline: true });
-          doc.moveDown(0.5);
-          doc.fontSize(9).font('Helvetica');
-  
-          Object.entries(employee.deductions).forEach(([deductionTypeId, value]) => {
-            if (value > 0) {
-              const deductionType = deductionTypes.find(dt => dt.id === deductionTypeId);
-              const label = deductionType ? deductionType.label : 'Other Deduction';
-              
-              doc.text(label, 50, doc.y, { continued: true, width: 400 });
-              doc.text(`$${parseFloat(value).toFixed(2)}`, { align: 'right' });
-            }
-          });
-  
-          doc.moveDown();
-          doc.font('Helvetica-Bold').text('Total Deductions', 50, doc.y, { continued: true, width: 400 });
-          doc.text(`$${parseFloat(employee.totalDeductions).toFixed(2)}`, { align: 'right' });
-          doc.moveDown();
-        }
-  
-        // Net Pay
-        doc.strokeColor('#000').lineWidth(2).moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-        doc.moveDown(0.5);
-        doc.fontSize(14).font('Helvetica-Bold');
-        doc.fillColor('#FF6600').text('NET PAY', 50, doc.y, { continued: true, width: 400 });
-        doc.text(`$${parseFloat(employee.netPay).toFixed(2)}`, { align: 'right' });
-        doc.fillColor('#000');
-        doc.moveDown();
-        doc.strokeColor('#000').lineWidth(2).moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-  
-        // Footer
-        doc.moveDown(2);
-        doc.fontSize(8).font('Helvetica').fillColor('#666');
-        doc.text('This is a computer-generated payslip. No signature required.', { align: 'center' });
-  
-        doc.end();
-      } catch (error) {
-        reject(error);
       }
-    });
+
+      // PAYSLIP title - right side
+      doc.fontSize(18).font('Helvetica-Bold').text('EMPLOYEE PAY STATEMENT', 300, 50, { align: 'right', width: 262 });
+      
+      doc.moveDown(3);
+
+      // ============================================
+      // EMPLOYEE & PAY PERIOD INFO BOX
+      // ============================================
+      
+      let boxY = 110;
+      
+      // Gray background box
+      doc.rect(40, boxY, 532, 70).fillAndStroke('#f5f5f5', '#000');
+      
+      // Left column - Employee info
+      doc.fillColor('#000').fontSize(8).font('Helvetica-Bold').text('EMPLOYEE', 50, boxY + 10);
+      doc.fontSize(10).font('Helvetica-Bold').text(employee.employeeName, 50, boxY + 22);
+      doc.fontSize(8).font('Helvetica').text(employee.position || 'No position', 50, boxY + 36);
+      doc.fontSize(8).text(`Employee ID: ${employee.employeeId || 'N/A'}`, 50, boxY + 48);
+      
+      // Middle column - Pay period
+      doc.fontSize(8).font('Helvetica-Bold').text('PAY PERIOD', 220, boxY + 10);
+      doc.fontSize(8).font('Helvetica').text(
+        `From: ${new Date(payrollRun.periodStart).toLocaleDateString('en-US', { 
+          month: '2-digit', day: '2-digit', year: 'numeric' 
+        })}`,
+        220, boxY + 22
+      );
+      doc.text(
+        `To: ${new Date(payrollRun.periodEnd).toLocaleDateString('en-US', { 
+          month: '2-digit', day: '2-digit', year: 'numeric' 
+        })}`,
+        220, boxY + 36
+      );
+      
+      // Right column - Pay info
+      doc.fontSize(8).font('Helvetica-Bold').text('PAY DATE', 400, boxY + 10);
+      doc.fontSize(10).font('Helvetica-Bold').text(
+        new Date(payrollRun.payDate).toLocaleDateString('en-US', { 
+          month: '2-digit', day: '2-digit', year: 'numeric' 
+        }),
+        400, boxY + 22
+      );
+      doc.fontSize(8).font('Helvetica').text(`Check #: ${employee.checkNumber}`, 400, boxY + 48);
+
+      doc.moveDown(4);
+
+      // ============================================
+      // EARNINGS TABLE
+      // ============================================
+      
+      let tableY = 195;
+      
+      // Section header with gray background
+      doc.rect(40, tableY, 532, 20).fillAndStroke('#e8e8e8', '#000');
+      doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text('EARNINGS', 50, tableY + 6);
+      
+      tableY += 20;
+      
+      // Column headers
+      doc.rect(40, tableY, 532, 18).stroke();
+      doc.fontSize(8).font('Helvetica-Bold');
+      doc.text('DESCRIPTION', 50, tableY + 5);
+      doc.text('HOURS', 280, tableY + 5, { width: 50, align: 'right' });
+      doc.text('RATE', 340, tableY + 5, { width: 60, align: 'right' });
+      doc.text('CURRENT', 410, tableY + 5, { width: 70, align: 'right' });
+      doc.text('YTD', 490, tableY + 5, { width: 72, align: 'right' });
+      
+      tableY += 18;
+      
+      // Earnings data rows
+      doc.fontSize(9).font('Helvetica');
+      
+      if (employee.earnings && earningTypes) {
+        Object.entries(employee.earnings).forEach(([earningTypeId, value]) => {
+          if (value > 0) {
+            const earningType = earningTypes.find(et => et.id === earningTypeId);
+            const label = earningType ? earningType.label : 'Other Earning';
+            
+            // Get hours
+            const hoursField = `${earningTypeId}Hours`;
+            const hours = employee.earnings[hoursField] || '';
+            const displayHours = hours ? parseFloat(hours).toFixed(2) : '-';
+            
+            // Get rate
+            const rateField = `${earningTypeId}Rate`;
+            const rate = employee.earnings[rateField] || '';
+            const displayRate = rate ? parseFloat(rate).toFixed(2) : '-';
+            
+            // Get YTD
+            const ytdField = earningTypeId.replace(/([A-Z])/g, (match) => match.toLowerCase());
+            const ytdValue = ytd[ytdField] || ytd[`${ytdField}Pay`] || 0;
+            
+            // Row with border
+            doc.rect(40, tableY, 532, 16).stroke();
+            
+            doc.text(label, 50, tableY + 4);
+            doc.text(displayHours, 280, tableY + 4, { width: 50, align: 'right' });
+            doc.text(displayRate, 340, tableY + 4, { width: 60, align: 'right' });
+            doc.text(parseFloat(value).toFixed(2), 410, tableY + 4, { width: 70, align: 'right' });
+            doc.text(parseFloat(ytdValue).toFixed(2), 490, tableY + 4, { width: 72, align: 'right' });
+            
+            tableY += 16;
+          }
+        });
+      }
+      
+      // Gross pay total row - highlighted
+      doc.rect(40, tableY, 532, 18).fillAndStroke('#f0f0f0', '#000');
+      doc.fillColor('#000').fontSize(10).font('Helvetica-Bold');
+      doc.text('GROSS PAY', 50, tableY + 5);
+      doc.text(parseFloat(employee.grossPay).toFixed(2), 410, tableY + 5, { width: 70, align: 'right' });
+      doc.text(parseFloat(ytd.grossEarnings).toFixed(2), 490, tableY + 5, { width: 72, align: 'right' });
+      
+      tableY += 25;
+
+      // ============================================
+      // TAXES TABLE
+      // ============================================
+      
+      // Section header
+      doc.rect(40, tableY, 532, 20).fillAndStroke('#e8e8e8', '#000');
+      doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text('TAXES', 50, tableY + 6);
+      
+      tableY += 20;
+      
+      // Column headers
+      doc.rect(40, tableY, 532, 18).stroke();
+      doc.fontSize(8).font('Helvetica-Bold');
+      doc.text('DESCRIPTION', 50, tableY + 5);
+      doc.text('CURRENT', 410, tableY + 5, { width: 70, align: 'right' });
+      doc.text('YTD', 490, tableY + 5, { width: 72, align: 'right' });
+      
+      tableY += 18;
+      
+      // Tax rows
+      doc.fontSize(9).font('Helvetica');
+      
+      if (employee.taxes) {
+        const taxItems = [
+          { key: 'federalTax', label: 'Federal Income Tax', ytdKey: 'federalTax' },
+          { key: 'stateTax', label: 'State Income Tax', ytdKey: 'stateTax' },
+          { key: 'fica', label: 'Social Security (FICA)', ytdKey: 'fica' },
+          { key: 'medicare', label: 'Medicare', ytdKey: 'medicare' },
+          { key: 'sdi', label: 'State Disability Insurance (SDI)', ytdKey: 'sdi' },
+          { key: 'calSavers', label: 'CalSavers', ytdKey: 'calSavers' },
+        ];
+
+        taxItems.forEach(({ key, label, ytdKey }) => {
+          const currentValue = parseFloat(employee.taxes[key] || 0);
+          if (currentValue > 0) {
+            const ytdValue = parseFloat(ytd[ytdKey] || 0);
+            
+            doc.rect(40, tableY, 532, 16).stroke();
+            
+            doc.text(label, 50, tableY + 4);
+            doc.text(currentValue.toFixed(2), 410, tableY + 4, { width: 70, align: 'right' });
+            doc.text(ytdValue.toFixed(2), 490, tableY + 4, { width: 72, align: 'right' });
+            
+            tableY += 16;
+          }
+        });
+      }
+      
+      // Total taxes row
+      doc.rect(40, tableY, 532, 18).fillAndStroke('#f0f0f0', '#000');
+      doc.fillColor('#000').fontSize(10).font('Helvetica-Bold');
+      doc.text('TOTAL TAXES', 50, tableY + 5);
+      doc.text(parseFloat(employee.totalTaxes || 0).toFixed(2), 410, tableY + 5, { width: 70, align: 'right' });
+      doc.text(parseFloat(ytd.totalTaxes).toFixed(2), 490, tableY + 5, { width: 72, align: 'right' });
+      
+      tableY += 25;
+
+      // ============================================
+      // DEDUCTIONS TABLE (if any)
+      // ============================================
+      
+      if (employee.deductions && employee.totalDeductions > 0) {
+        doc.rect(40, tableY, 532, 20).fillAndStroke('#e8e8e8', '#000');
+        doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text('DEDUCTIONS', 50, tableY + 6);
+        
+        tableY += 20;
+        
+        // Column headers
+        doc.rect(40, tableY, 532, 18).stroke();
+        doc.fontSize(8).font('Helvetica-Bold');
+        doc.text('DESCRIPTION', 50, tableY + 5);
+        doc.text('CURRENT', 410, tableY + 5, { width: 70, align: 'right' });
+        doc.text('YTD', 490, tableY + 5, { width: 72, align: 'right' });
+        
+        tableY += 18;
+        
+        // Deduction rows
+        doc.fontSize(9).font('Helvetica');
+        
+        Object.entries(employee.deductions).forEach(([deductionTypeId, value]) => {
+          if (value > 0) {
+            const deductionType = deductionTypes.find(dt => dt.id === deductionTypeId);
+            const label = deductionType ? deductionType.label : 'Other Deduction';
+            
+            const ytdField = deductionTypeId.replace(/([A-Z])/g, (match) => match.toLowerCase());
+            const ytdValue = ytd[ytdField] || 0;
+            
+            doc.rect(40, tableY, 532, 16).stroke();
+            
+            doc.text(label, 50, tableY + 4);
+            doc.text(parseFloat(value).toFixed(2), 410, tableY + 4, { width: 70, align: 'right' });
+            doc.text(parseFloat(ytdValue).toFixed(2), 490, tableY + 4, { width: 72, align: 'right' });
+            
+            tableY += 16;
+          }
+        });
+        
+        // Total deductions row
+        doc.rect(40, tableY, 532, 18).fillAndStroke('#f0f0f0', '#000');
+        doc.fillColor('#000').fontSize(10).font('Helvetica-Bold');
+        doc.text('TOTAL DEDUCTIONS', 50, tableY + 5);
+        doc.text(parseFloat(employee.totalDeductions).toFixed(2), 410, tableY + 5, { width: 70, align: 'right' });
+        doc.text(parseFloat(ytd.totalDeductions).toFixed(2), 490, tableY + 5, { width: 72, align: 'right' });
+        
+        tableY += 25;
+      }
+
+      // ============================================
+      // NET PAY - PROMINENT BOX
+      // ============================================
+      
+      // Black border box with white background
+      doc.rect(40, tableY, 532, 35).fillAndStroke('#ffffff', '#000');
+      doc.lineWidth(2);
+      doc.rect(40, tableY, 532, 35).stroke();
+      doc.lineWidth(1);
+      
+      doc.fillColor('#000').fontSize(14).font('Helvetica-Bold');
+      doc.text('NET PAY', 50, tableY + 11);
+      
+      doc.fontSize(16).font('Helvetica-Bold');
+      doc.text(`$${parseFloat(employee.netPay).toFixed(2)}`, 410, tableY + 10, { width: 70, align: 'right' });
+      doc.text(`$${parseFloat(ytd.netPay).toFixed(2)}`, 490, tableY + 10, { width: 72, align: 'right' });
+
+      // ============================================
+      // FOOTER
+      // ============================================
+      
+      tableY += 50;
+      
+      // Separator line
+      doc.moveTo(40, tableY).lineTo(572, tableY).stroke();
+      
+      tableY += 10;
+      
+      doc.fontSize(7).font('Helvetica').fillColor('#666');
+      doc.text(
+        'This is a computer-generated pay statement and does not require a signature.',
+        40, tableY, 
+        { align: 'center', width: 532 }
+      );
+      
+      tableY += 12;
+      
+      doc.text(
+        `Generated: ${new Date().toLocaleString('en-US', { 
+          month: '2-digit', 
+          day: '2-digit', 
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })} | Year-to-Date includes ${ytd.payPeriodsIncluded || 0} pay period(s) from ${new Date(payrollRun.periodEnd).getFullYear()}`,
+        40, tableY,
+        { align: 'center', width: 532 }
+      );
+
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
-  
 
 module.exports = generatePayslipPDF;

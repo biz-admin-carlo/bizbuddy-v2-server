@@ -422,6 +422,7 @@ model User {
   payrollDetails EmployeePayrollDetails?
   createdCutoffPeriods CutoffPeriod[]
   approvedTimeLogs     TimeLogApproval[]
+  requestLogs     RequestLog[]
 
   @@unique([companyId, email])
 }
@@ -528,6 +529,7 @@ model Company {
   notifyAdminMissedClocks  Boolean   @default(true)
   morningReportTime        String    @default("10:00") // HH:mm format
   eveningReportTime        String    @default("18:00") // HH:mm format
+  requestLogs     RequestLog[]
   
   emailNotificationLogs EmailNotificationLog[]
 
@@ -553,6 +555,7 @@ model Department {
   overtimes               Overtime[]
   shiftSchedules          ShiftSchedule[]
   users                   User[]                   @relation("DepartmentUsers")
+  requestLogs     RequestLog[]
 }
 
 model UserRate {
@@ -943,6 +946,61 @@ model Subscription {
   plan      SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model RequestLog {
+  id              String    @id @default(cuid())
+  
+  // Request Info
+  method          String    // GET, POST, PUT, DELETE
+  url             String    // /api/employee/123
+  endpoint        String?   // Normalized endpoint: /api/employee/:id
+  statusCode      Int       // 200, 400, 500
+  responseTime    Int       // milliseconds
+  
+  // User Context (from JWT token)
+  userId          String?
+  companyId       String?
+  departmentId    String?
+  userRole        userRole?
+  
+  // Technical Details
+  ipAddress       String?
+  userAgent       String?   @db.Text
+  requestBody     Json?     // For POST/PUT (sanitized - no passwords!)
+  responseBody    Json?     // Optional: response data (be careful with size)
+  queryParams     Json?     // URL query parameters
+  
+  // Error Tracking
+  errorMessage    String?   @db.Text
+  errorStack      String?   @db.Text
+  errorType       String?   // "ValidationError", "AuthError", etc.
+  
+  // Performance Flags
+  isSlowRequest   Boolean   @default(false) // Response time > threshold
+  isFailed        Boolean   @default(false) // Status >= 400
+  
+  // Metadata
+  environment     String?   // "production", "staging", "development"
+  serverInstance  String?   // For load-balanced servers
+  
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  
+  // Relations (optional - allows querying by user/company)
+  user            User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company         Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  department      Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  
+  // Indexes for fast analytics queries
+  @@index([createdAt]) // Time-based queries
+  @@index([endpoint, createdAt]) // Endpoint performance over time
+  @@index([statusCode, createdAt]) // Error tracking
+  @@index([userId, createdAt]) // User activity
+  @@index([companyId, createdAt]) // Company usage
+  @@index([isSlowRequest, createdAt]) // Performance issues
+  @@index([isFailed, createdAt]) // Error tracking
+  @@index([method, endpoint]) // Endpoint-specific queries
+}
+
 
 enum NotificationCode {
   NOTIF001

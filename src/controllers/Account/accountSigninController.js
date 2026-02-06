@@ -12,25 +12,34 @@ const getUserEmail = async (req, res) => {
     if (!email) {
       return res.status(400).json({ message: "Email is required." });
     }
+    
     const normalizedEmail = email.trim().toLowerCase();
+    
     const users = await prisma.user.findMany({
-      where: { email: normalizedEmail },
+      where: { 
+        email: normalizedEmail,
+        status: 'active'
+      },
       include: { company: { select: { id: true, name: true } } },
     });
-    if (!users || users.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "No users found with this email." });
-    }
+    
     const result = users.map((user) => ({
       userId: user.id,
       email: user.email,
       username: user.username,
       companyId: user.companyId,
       companyName: user.company ? user.company.name : null,
+      role: user.role,
+      status: user.status,
     }));
+    
     console.log("## Success");
-    return res.status(200).json({ message: "Users found.", data: result });
+    // Always return 200, even with empty array
+    return res.status(200).json({ 
+      message: users.length > 0 ? "Users found." : "No active accounts found for this email.",
+      data: result,
+      hasActiveAccounts: users.length > 0 // Add helpful flag
+    });
   } catch (error) {
     console.error("Error in getUserEmail:", error);
     return res.status(500).json({ message: "Internal server error." });
@@ -124,36 +133,56 @@ const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
     const { email, password, companyId } = req.query;
+    
     if (!email || !password || !companyId) {
-      return res
-        .status(400)
-        .json({ message: "Email, password, and companyId are required." });
+      return res.status(400).json({ 
+        message: "Email, password, and companyId are required." 
+      });
     }
+    
     const normalizedEmail = email.trim().toLowerCase();
+    
     const user = await prisma.user.findFirst({
       where: { email: normalizedEmail, companyId },
       include: { company: true },
     });
+    
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
+    
+    // Check if account is active BEFORE checking password
+    if (user.status !== 'active') {
+      return res.status(403).json({ 
+        message: "Account is inactive. Please contact your administrator." 
+      });
+    }
+    
     const passwordValid = await bcrypt.compare(password, user.password);
+    
     if (!passwordValid) {
       return res.status(401).json({ message: "Invalid credentials." });
     }
+    
     await prisma.user.update({
       where: { id: user.id },
       data: { updatedAt: new Date() },
     });
+    
     if (!JWT_SECRET) {
-      return res.status(500).json({ message: "JWT secret is not configured." });
+      return res.status(500).json({ 
+        message: "JWT secret is not configured." 
+      });
     }
+    
     const tokenPayload = { userId: user.id, companyId: user.companyId };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: "30d" });
+    
     console.log("## Success");
-    return res
-      .status(200)
-      .json({ message: "Sign-in successful.", data: { token } });
+    return res.status(200).json({ 
+      message: "Sign-in successful.", 
+      data: { token } 
+    });
   } catch (error) {
     console.error("Error in signIn:", error);
     return res.status(500).json({ message: "Internal server error." });
@@ -463,6 +492,92 @@ const updateDeviceToken = async (req, res) => {
   }
 };
 
+const getUserExportData = async (req, res) => {
+  try {
+    const { userId, companyId } = req.query;
+
+    // Validate inputs
+    if (!userId || !companyId) {
+      return res.status(400).json({
+        success: false,
+        message: "userId and companyId are required",
+      });
+    }
+
+    console.log("📊 Export data request for userId:", userId);
+
+    // Fetch minimal user data
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        companyId: true,
+        
+        profile: {
+          select: {
+            firstName: true,
+            lastName: true,
+          },
+        },
+        
+        company: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Security check: Verify companyId matches
+    if (user.companyId !== companyId) {
+      console.warn("⚠️ Company ID mismatch:", {
+        userCompanyId: user.companyId,
+        requestedCompanyId: companyId,
+      });
+      return res.status(403).json({
+        success: false,
+        message: "Company ID mismatch",
+      });
+    }
+
+    // Build full name
+    const fullName = user.profile
+      ? `${user.profile.firstName || ''} ${user.profile.lastName || ''}`.trim() || user.email
+      : user.email;
+
+    // Return minimal data needed for exports
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        fullName: fullName,
+        company: {
+          name: user.company?.name || 'Company',
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("❌ Error in getUserExportData:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+}
+
 module.exports = {
   getUserEmail,
   signIn,
@@ -472,4 +587,5 @@ module.exports = {
   signOut,
   getDeviceToken,
   updateDeviceToken,
+  getUserExportData
 };
