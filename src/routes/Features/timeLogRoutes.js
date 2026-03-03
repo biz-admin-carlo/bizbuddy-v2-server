@@ -15,6 +15,7 @@ const {
   lunchBreakEnd,
   getCompanyTimeLogs,
   updateTimeLogDateTime,
+  getTodayShift
 } = require("@controllers/Features/timeLogController");
 
 router.patch("/:id/datetime", authenticate, updateTimeLogDateTime);
@@ -27,5 +28,6 @@ router.post("/coffee-break/end", authenticate, coffeeBreakEnd);
 router.post("/lunch-break/start", authenticate, lunchBreakStart);
 router.post("/lunch-break/end", authenticate, lunchBreakEnd);
 router.get("/", authenticate, getCompanyTimeLogs);
+router.get("/today-shift", authenticate, getTodayShift);
 
 module.exports = router;

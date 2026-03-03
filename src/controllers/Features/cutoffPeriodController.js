@@ -368,15 +368,22 @@ const createCutoffPeriod = async (req, res) => {
 const getCutoffPeriods = async (req, res) => {
   try {
     const companyId = req.user.companyId;
-    const { status, page = 1, limit = 10 } = req.query;
+    const { status, page = 1, limit = 100, departmentId } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = parseInt(limit);
 
+    // Build where clause with department filter
     const where = {
-      creator: { companyId },
+      companyId, // ✅ Use companyId directly instead of nested creator
       ...(status && { status }),
+      ...(departmentId && departmentId !== 'none' && { departmentId }) // ✅ Filter by department
     };
+    
+    // ✅ Special case: filter for null departmentId when "none" is passed
+    if (departmentId === 'none') {
+      where.departmentId = null;
+    }
 
     const [cutoffPeriods, total] = await Promise.all([
       prisma.cutoffPeriod.findMany({
@@ -390,19 +397,26 @@ const getCutoffPeriods = async (req, res) => {
               profile: true,
             },
           },
+          department: { // ✅ Include department info
+            select: { 
+              id: true, 
+              name: true 
+            }
+          },
           _count: {
             select: {
               approvals: true,
             },
           },
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: { periodStart: "desc" }, // ✅ Sort by period start date
         skip,
         take,
       }),
       prisma.cutoffPeriod.count({ where }),
     ]);
 
+    // ✅ Calculate approval stats for each period
     const periodsWithStats = await Promise.all(
       cutoffPeriods.map(async (period) => {
         const approvalStats = await prisma.timeLogApproval.groupBy({
@@ -428,7 +442,7 @@ const getCutoffPeriods = async (req, res) => {
       })
     );
 
-    console.log("[✅ Cutoff periods retrieved]", periodsWithStats.length);
+    console.log("[✅ Cutoff periods retrieved]", periodsWithStats.length, `(department: ${departmentId || 'all'})`);
 
     return res.status(200).json({
       message: "Cutoff periods retrieved successfully.",

@@ -12,17 +12,17 @@ const getUserEmail = async (req, res) => {
     if (!email) {
       return res.status(400).json({ message: "Email is required." });
     }
-    
+
     const normalizedEmail = email.trim().toLowerCase();
-    
+
     const users = await prisma.user.findMany({
-      where: { 
+      where: {
         email: normalizedEmail,
-        status: 'active'
+        status: "active",
       },
       include: { company: { select: { id: true, name: true } } },
     });
-    
+
     const result = users.map((user) => ({
       userId: user.id,
       email: user.email,
@@ -32,13 +32,12 @@ const getUserEmail = async (req, res) => {
       role: user.role,
       status: user.status,
     }));
-    
+
     console.log("## Success");
-    // Always return 200, even with empty array
-    return res.status(200).json({ 
+    return res.status(200).json({
       message: users.length > 0 ? "Users found." : "No active accounts found for this email.",
       data: result,
-      hasActiveAccounts: users.length > 0 // Add helpful flag
+      hasActiveAccounts: users.length > 0,
     });
   } catch (error) {
     console.error("Error in getUserEmail:", error);
@@ -64,9 +63,7 @@ const getUserProfile = async (req, res) => {
     }
     const { userId, companyId } = decoded;
     if (!userId || !companyId) {
-      return res
-        .status(400)
-        .json({ message: "Token missing userId or companyId." });
+      return res.status(400).json({ message: "Token missing userId or companyId." });
     }
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -91,9 +88,7 @@ const getUserProfile = async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
     let latestSubscription =
-      user.Subscription && user.Subscription.length > 0
-        ? user.Subscription[0]
-        : null;
+      user.Subscription && user.Subscription.length > 0 ? user.Subscription[0] : null;
     if (!latestSubscription) {
       const companyWithSub = await prisma.company.findUnique({
         where: { id: companyId },
@@ -133,55 +128,57 @@ const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
     const { email, password, companyId } = req.query;
-    
+
     if (!email || !password || !companyId) {
-      return res.status(400).json({ 
-        message: "Email, password, and companyId are required." 
+      return res.status(400).json({
+        message: "Email, password, and companyId are required.",
       });
     }
-    
+
     const normalizedEmail = email.trim().toLowerCase();
-    
+
     const user = await prisma.user.findFirst({
       where: { email: normalizedEmail, companyId },
       include: { company: true },
     });
-    
+
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
-    
-    // Check if account is active BEFORE checking password
-    if (user.status !== 'active') {
-      return res.status(403).json({ 
-        message: "Account is inactive. Please contact your administrator." 
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        message: "Account is inactive. Please contact your administrator.",
       });
     }
-    
+
     const passwordValid = await bcrypt.compare(password, user.password);
-    
     if (!passwordValid) {
       return res.status(401).json({ message: "Invalid credentials." });
     }
-    
+
     await prisma.user.update({
       where: { id: user.id },
       data: { updatedAt: new Date() },
     });
-    
+
     if (!JWT_SECRET) {
-      return res.status(500).json({ 
-        message: "JWT secret is not configured." 
-      });
+      return res.status(500).json({ message: "JWT secret is not configured." });
     }
-    
-    const tokenPayload = { userId: user.id, companyId: user.companyId };
+
+    // tokenVersion is now included in the payload so the middleware
+    // can invalidate tokens issued before a "logout all" action.
+    const tokenPayload = {
+      userId: user.id,
+      companyId: user.companyId,
+      tokenVersion: user.tokenVersion,
+    };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: "30d" });
-    
+
     console.log("## Success");
-    return res.status(200).json({ 
-      message: "Sign-in successful.", 
-      data: { token } 
+    return res.status(200).json({
+      message: "Sign-in successful.",
+      data: { token },
     });
   } catch (error) {
     console.error("Error in signIn:", error);
@@ -214,28 +211,15 @@ const updateProfile = async (req, res) => {
 
     console.log(req.body);
 
-    // ============================================
-    // REQUIRED FIELD VALIDATION
-    // ============================================
     if (!username || !email) {
-      return res
-        .status(400)
-        .json({ message: "Username and email are required." });
+      return res.status(400).json({ message: "Username and email are required." });
     }
 
     const normalizedUsername = username.trim().toLowerCase();
     const normalizedEmail = email.trim().toLowerCase();
 
-    // ============================================
-    // USERNAME VALIDATION
-    // Must start and end with alphanumeric
-    // Allows . and _ in the middle
-    // Minimum 3 characters
-    // ============================================
     if (normalizedUsername.length < 3) {
-      return res
-        .status(400)
-        .json({ message: "Username must be at least 3 characters." });
+      return res.status(400).json({ message: "Username must be at least 3 characters." });
     }
 
     if (!/^[a-z0-9]([a-z0-9._]*[a-z0-9])?$/i.test(normalizedUsername)) {
@@ -245,23 +229,16 @@ const updateProfile = async (req, res) => {
       });
     }
 
-    // Check for consecutive special characters
     if (/[._]{2,}/.test(normalizedUsername)) {
       return res.status(400).json({
         message: "Username cannot contain consecutive periods or underscores.",
       });
     }
 
-    // ============================================
-    // EMAIL VALIDATION
-    // ============================================
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ message: "Please enter a valid email address." });
     }
 
-    // ============================================
-    // DUPLICATE USERNAME CHECK
-    // ============================================
     const duplicateUsername = await prisma.user.findFirst({
       where: {
         username: { equals: normalizedUsername, mode: "insensitive" },
@@ -272,9 +249,6 @@ const updateProfile = async (req, res) => {
       return res.status(400).json({ message: "Username is already taken." });
     }
 
-    // ============================================
-    // DUPLICATE EMAIL CHECK (within company)
-    // ============================================
     const duplicateEmail = await prisma.user.findFirst({
       where: {
         companyId,
@@ -283,32 +257,19 @@ const updateProfile = async (req, res) => {
       },
     });
     if (duplicateEmail) {
-      return res
-        .status(400)
-        .json({ message: "Email already exists within the company." });
+      return res.status(400).json({ message: "Email already exists within the company." });
     }
 
-    // ============================================
-    // SSN/ITIN VALIDATION & DUPLICATE CHECK
-    // ============================================
     let normalizedSsnItin = null;
     if (ssnItin && ssnItin.trim()) {
       normalizedSsnItin = ssnItin.trim();
-
-      // Validate SSN format (XXX-XX-XXXX or similar with dashes)
-      // Allow 9-15 characters including dashes
       if (normalizedSsnItin.length < 9 || normalizedSsnItin.length > 15) {
         return res.status(400).json({
           message: "SSN/ITIN must be between 9 and 15 characters.",
         });
       }
-
-      // Check for duplicate SSN/ITIN
       const duplicateSsn = await prisma.userProfile.findFirst({
-        where: {
-          ssnItin: normalizedSsnItin,
-          NOT: { userId },
-        },
+        where: { ssnItin: normalizedSsnItin, NOT: { userId } },
       });
       if (duplicateSsn) {
         return res.status(400).json({
@@ -317,22 +278,14 @@ const updateProfile = async (req, res) => {
       }
     }
 
-    // ============================================
-    // DATE OF BIRTH VALIDATION
-    // ============================================
     let parsedDateOfBirth = null;
     if (dateOfBirth && dateOfBirth.trim()) {
       parsedDateOfBirth = new Date(dateOfBirth);
       if (isNaN(parsedDateOfBirth.getTime())) {
-        return res.status(400).json({
-          message: "Please enter a valid date of birth.",
-        });
+        return res.status(400).json({ message: "Please enter a valid date of birth." });
       }
     }
 
-    // ============================================
-    // UPDATE USER TABLE
-    // ============================================
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
@@ -342,9 +295,6 @@ const updateProfile = async (req, res) => {
       },
     });
 
-    // ============================================
-    // UPSERT USER PROFILE
-    // ============================================
     const profileData = {
       firstName: firstName?.trim() || null,
       lastName: lastName?.trim() || null,
@@ -365,10 +315,7 @@ const updateProfile = async (req, res) => {
     const updatedProfile = await prisma.userProfile.upsert({
       where: { userId },
       update: profileData,
-      create: {
-        userId,
-        ...profileData,
-      },
+      create: { userId, ...profileData },
     });
 
     return res.status(200).json({
@@ -377,8 +324,6 @@ const updateProfile = async (req, res) => {
     });
   } catch (error) {
     console.error("Error in updateProfile:", error);
-
-    // Handle Prisma unique constraint errors
     if (error.code === "P2002") {
       const field = error.meta?.target?.[0];
       if (field === "username") {
@@ -390,7 +335,6 @@ const updateProfile = async (req, res) => {
         });
       }
     }
-
     return res.status(500).json({ message: "Internal server error." });
   }
 };
@@ -399,14 +343,10 @@ const changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword, confirmPassword } = req.body;
     if (!oldPassword || !newPassword || !confirmPassword) {
-      return res
-        .status(400)
-        .json({ message: "All password fields are required." });
+      return res.status(400).json({ message: "All password fields are required." });
     }
     if (newPassword !== confirmPassword) {
-      return res
-        .status(400)
-        .json({ message: "New password and confirmation do not match." });
+      return res.status(400).json({ message: "New password and confirmation do not match." });
     }
     const { id: userId } = req.user;
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -433,20 +373,16 @@ const changePassword = async (req, res) => {
 const getDeviceToken = async (req, res) => {
   try {
     const { userId } = req.body;
-
     if (!userId) {
       return res.status(400).json({ message: "User ID is required." });
     }
-
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, deviceToken: true },
     });
-
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
-
     return res.status(200).json({
       message: "Device token retrieved successfully.",
       data: { deviceToken: user.deviceToken },
@@ -460,28 +396,20 @@ const getDeviceToken = async (req, res) => {
 const updateDeviceToken = async (req, res) => {
   try {
     const { userId, deviceToken } = req.body;
-
     if (!userId) {
       return res.status(400).json({ message: "User ID is required." });
     }
-
     if (!deviceToken) {
       return res.status(400).json({ message: "Device token is required." });
     }
-
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
-
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: {
-        deviceToken: deviceToken.trim(),
-        updatedAt: new Date(),
-      },
+      data: { deviceToken: deviceToken.trim(), updatedAt: new Date() },
     });
-
     return res.status(200).json({
       message: "Device token updated successfully.",
       data: { deviceToken: updatedUser.deviceToken },
@@ -495,18 +423,10 @@ const updateDeviceToken = async (req, res) => {
 const getUserExportData = async (req, res) => {
   try {
     const { userId, companyId } = req.query;
-
-    // Validate inputs
     if (!userId || !companyId) {
-      return res.status(400).json({
-        success: false,
-        message: "userId and companyId are required",
-      });
+      return res.status(400).json({ success: false, message: "userId and companyId are required" });
     }
-
     console.log("📊 Export data request for userId:", userId);
-
-    // Fetch minimal user data
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -514,69 +434,43 @@ const getUserExportData = async (req, res) => {
         username: true,
         email: true,
         companyId: true,
-        
-        profile: {
-          select: {
-            firstName: true,
-            lastName: true,
-          },
-        },
-        
-        company: {
-          select: {
-            name: true,
-          },
-        },
+        profile: { select: { firstName: true, lastName: true } },
+        company: { select: { name: true } },
       },
     });
-
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
-
-    // Security check: Verify companyId matches
     if (user.companyId !== companyId) {
       console.warn("⚠️ Company ID mismatch:", {
         userCompanyId: user.companyId,
         requestedCompanyId: companyId,
       });
-      return res.status(403).json({
-        success: false,
-        message: "Company ID mismatch",
-      });
+      return res.status(403).json({ success: false, message: "Company ID mismatch" });
     }
-
-    // Build full name
-    const fullName = user.profile
-      ? `${user.profile.firstName || ''} ${user.profile.lastName || ''}`.trim() || user.email
-      : user.email;
-
-    // Return minimal data needed for exports
+    const fullName =
+      user.profile
+        ? `${user.profile.firstName || ""} ${user.profile.lastName || ""}`.trim() || user.email
+        : user.email;
     return res.status(200).json({
       success: true,
       data: {
         id: user.id,
         username: user.username,
         email: user.email,
-        fullName: fullName,
-        company: {
-          name: user.company?.name || 'Company',
-        },
+        fullName,
+        company: { name: user.company?.name || "Company" },
       },
     });
-
   } catch (error) {
     console.error("❌ Error in getUserExportData:", error);
     return res.status(500).json({
       success: false,
       message: "Internal server error",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
-}
+};
 
 module.exports = {
   getUserEmail,

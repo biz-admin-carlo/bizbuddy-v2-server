@@ -70,10 +70,28 @@ async function sendEveningReportJob() {
         };
 
         if (userShift) {
+          // ✅ Fix 1: Guard against null/undefined endTime
+          const endTime = userShift.customEndTime || userShift.shift?.endTime;
+
+          if (!endTime) {
+            // No end time defined — treat as active, no expectedClockOut
+            activeEmployees.push(employeeData);
+            continue;
+          }
+
+          // ✅ Fix 2: Use moment-timezone to get correct local date (not UTC)
+          const assignedDateStr = moment(userShift.assignedDate).tz(timezone).format('YYYY-MM-DD');
           const shiftEndTime = moment.tz(
-            `${userShift.assignedDate.toISOString().split('T')[0]} ${userShift.customEndTime || userShift.shift.endTime}`,
+            `${assignedDateStr} ${endTime}`,
+            'YYYY-MM-DD HH:mm:ss',
             timezone
           );
+
+          if (!shiftEndTime.isValid()) {
+            // ✅ Fix 3: Extra safety net — if still invalid for any reason
+            activeEmployees.push(employeeData);
+            continue;
+          }
 
           if (userShift.shift.crossesMidnight && shiftEndTime.isBefore(clockInTime)) {
             shiftEndTime.add(1, 'day');
@@ -95,7 +113,7 @@ async function sendEveningReportJob() {
             });
           }
         } else {
-          // No shift found but still clocked in
+          // No shift found but still clocked in — no expectedClockOut
           activeEmployees.push(employeeData);
         }
       }
