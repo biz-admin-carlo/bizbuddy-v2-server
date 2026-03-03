@@ -1,922 +1,611 @@
 // src/controllers/Features/shiftScheduleController.js
+
 const { prisma } = require("@config/connection");
-const { RRule } = require("rrule");
+const { format } = require("date-fns");
+const {
+  notifyEmployeeScheduleCreated,
+  notifyManagementScheduleCreated,
+} = require("@services/shiftNotificationService");
 
-function normalizeDate(date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
+/**
+ * Helper: Generate dates for recurring schedule
+ */
+const generateScheduleDates = (daysOfWeek, startDate, endDate) => {
+  const dates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
 
-const toUtcIso = (hhmm) => {
-  const [h, m] = hhmm.split(":").map(Number);
-  return new Date(Date.UTC(1970, 0, 1, h, m)).toISOString();
-};
+  // Ensure daysOfWeek contains numbers, not strings
+  const daysAsNumbers = daysOfWeek.map(d => parseInt(d, 10));
 
-const toUtcTimeOnly = (hhmm) => {
-  if (!hhmm || typeof hhmm !== "string" || !/^\d{2}:\d{2}$/.test(hhmm)) {
-    throw new Error(`Invalid HH:mm string: ${hhmm}`);
-  }
-  const [h, m] = hhmm.split(":").map(Number);
-  return new Date(Date.UTC(1970, 0, 1, h, m, 0, 0));
-};
-
-const hhmmToIsoUtc = (hhmm) => {
-  // "08:00" -> "1970-01-01T08:00:00.000Z"
-  const [h, m] = hhmm.split(":").map(Number);
-  return new Date(Date.UTC(1970, 0, 1, h, m)).toISOString();
-};
-
-const normalizeToIsoTime = (val) => {
-  // Accept "08:00", "8:00", or any ISO-ish string
-  if (!val) return null;
-  if (typeof val === "string" && !val.includes("T")) {
-    // assume HH:mm
-    return hhmmToIsoUtc(val);
-  }
-  // already ISO/Date-like
-  try {
-    return new Date(val).toISOString();
-  } catch {
-    return null;
-  }
-};
-
-const makeSplitNames = (base) => ({
-  split1: `${base} (Split 1)`,
-  split2: `${base} (Split 2)`,
-});
-
-async function ensureShiftTemplate({ companyId, name, startIso, endIso, timeZone }) {
-  // Try to reuse an identical template to avoid clutter
-  const existing = await prisma.shift.findFirst({
-    where: {
-      companyId,
-      shiftName: name,
-      startTime: new Date(startIso),
-      endTime: new Date(endIso),
-    },
-    select: { id: true },
-  });
-  if (existing) return existing;
-
-  return prisma.shift.create({
-    data: {
-      companyId,
-      shiftName: name,
-      startTime: new Date(startIso),
-      endTime: new Date(endIso),
-      differentialMultiplier: 1.0,
-      timeZone: timeZone || "UTC",
-      crossesMidnight: startIso > endIso, // same logic you use elsewhere
-    },
-    select: { id: true },
-  });
-}
-
-const hasTimeOverlap = (shift1, shift2) => {
-  const parseTime = (timeInput) => {
-    console.log("Parsing time input:", timeInput, typeof timeInput);
-
-    if (timeInput instanceof Date) {
-      const hours = timeInput.getUTCHours();
-      const minutes = timeInput.getUTCMinutes();
-      const totalMinutes = hours * 60 + minutes;
-      console.log(`Date parsed (UTC): ${hours}:${minutes} = ${totalMinutes} minutes`);
-      return totalMinutes;
+  let current = new Date(start);
+  while (current <= end) {
+    const dayOfWeek = current.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    if (daysAsNumbers.includes(dayOfWeek)) {
+      dates.push(format(current, 'yyyy-MM-dd'));
     }
-
-    if (typeof timeInput === "string") {
-      const [hours, minutes] = timeInput.split(":").map(Number);
-      const totalMinutes = hours * 60 + minutes;
-      console.log(`String parsed: ${hours}:${minutes} = ${totalMinutes} minutes`);
-      return totalMinutes;
-    }
-
-    console.log("Defaulting to 0");
-    return 0;
-  };
-
-  try {
-    const start1 = parseTime(shift1.startTime);
-    const end1 = parseTime(shift1.endTime);
-    const start2 = parseTime(shift2.startTime);
-    const end2 = parseTime(shift2.endTime);
-
-    console.log(`Comparing shifts: ${start1}-${end1} vs ${start2}-${end2}`);
-    const hasOverlap = start1 < end2 && end1 > start2;
-    console.log(`Overlap result: ${hasOverlap}`);
-
-    return hasOverlap;
-  } catch (error) {
-    console.error("Time parsing error:", error);
-    return false;
-  }
-};
-
-const detectTimeConflicts = async (userId, newShift, assignedDate) => {
-  const conflicts = [];
-
-  const existingUserShifts = await prisma.userShift.findMany({
-    where: { 
-      userId: userId,
-      assignedDate: new Date(assignedDate)
-    },
-    include: { shift: true }
-  });
-
-  for (const existing of existingUserShifts) {
-    if (hasTimeOverlap(existing.shift, newShift)) {
-      conflicts.push({
-        existingShiftId: existing.shift.id,
-        existingShiftName: existing.shift.shiftName,
-      });
-    }
+    current.setDate(current.getDate() + 1);
   }
 
-  return conflicts;
+  return dates;
 };
 
-async function createSplitShiftTemplates({ companyId, baseName, timeZone, split1, split2 }) {
-  const names = makeSplitName(baseName);
-
-  const tryFind = async (name, start, end) =>
-    prisma.shift.findFirst({
-      where: {
-        companyId,
-        shiftName: name,
-        startTime: new Date(toUtcIso(start)),
-        endTime: new Date(toUtcIso(end)),
-      },
-      select: { id: true },
-    });
-
-  const ensure = async (name, start, end) => {
-    const found = await tryFind(name, start, end);
-    if (found) return found;
-
-    return prisma.shift.create({
-      data: {
-        companyId,
-        shiftName: name,
-        startTime: new Date(toUtcIso(start)),
-        endTime: new Date(toUtcIso(end)),
-        timeZone: timeZone || "UTC",
-        differentialMultiplier: 1.0,
-        crossesMidnight: start > end,
-      },
-      select: { id: true },
-    });
-  };
-
-  const s1 = await ensure(names.split1, split1.start, split1.end);
-  const s2 = await ensure(names.split2, split2.start, split2.end);
-
-  return { split1Id: s1.id, split2Id: s2.id, names };
-}
-
-const createUserShiftsWithConflictDetection = async (
-  users,
-  schedule,
-  occurrenceDates,
-  conflictResolutions = {}
-) => {
-  console.log("Conflict Resolutions received:", conflictResolutions);
-
-  const userShiftData = [];
-  const conflicts = [];
-
-  // Load the new (target) shift once
-  const newShift = await prisma.shift.findUnique({
-    where: { id: schedule.shiftId },
-  });
-  if (!newShift) throw new Error("Shift not found");
-
-  for (const date of occurrenceDates) {
-    const day = new Date(date); // normalize if needed
-    for (const user of users) {
-      // Detect conflicts for this user on this date against the new shift
-      const userConflicts = await detectTimeConflicts(user.id, newShift, day);
-
-      // You were reading existing; keeping (may be useful downstream)
-      const existing = await prisma.userShift.findMany({
-        where: { userId: user.id, assignedDate: day },
-        select: { id: true, shiftId: true },
-      });
-
-      if (userConflicts.length > 0) {
-        // Accept both string and object formats
-        const resolutionData = conflictResolutions[user.id];
-        const resolution =
-          typeof resolutionData === "object" ? resolutionData.resolution : resolutionData;
-
-        console.log(`User ${user.id} has conflicts. Resolution: ${resolution}`);
-
-        if (resolution === "SKIP_NEW") {
-          // do nothing—leave existing as is
-          continue;
-
-        } else if (resolution === "OVERRIDE_EXISTING") {
-          // remove all conflicting assignments for that day for this user
-          await prisma.userShift.deleteMany({
-            where: {
-              userId: user.id,
-              assignedDate: day,
-              shiftId: { in: userConflicts.map((c) => c.existingShiftId) },
-            },
-          });
-
-          // assign the new (single) shift normally
-          userShiftData.push({
-            userId: user.id,
-            shiftId: schedule.shiftId, // reuse template
-            assignedDate: day,
-            // no custom times in a single-block override
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
-
-        } else if (resolution === "MULTI_SCHEDULE") {
-          // 1) Remove all conflicting assignments for that day (affected day only)
-          await prisma.userShift.deleteMany({
-            where: {
-              userId: user.id,
-              assignedDate: day,
-              shiftId: { in: userConflicts.map((c) => c.existingShiftId) },
-            },
-          });
-
-          // 2) Create TWO UserShift rows (split) that REUSE the original template
-          // Expecting resolutionData.scheduleData = { firstSchedule: {startTime,endTime}, secondSchedule: {...} }
-          const first = resolutionData?.scheduleData?.firstSchedule;
-          const second = resolutionData?.scheduleData?.secondSchedule;
-          if (!first || !second) {
-            throw new Error(
-              "MULTI_SCHEDULE missing scheduleData.firstSchedule/secondSchedule"
-            );
-          }
-
-          const originalId =
-            userConflicts[0]?.existingShiftId || schedule.shiftId; // audit trail
-
-          userShiftData.push(
-            {
-              userId: user.id,
-              shiftId: schedule.shiftId, // REUSE the template
-              assignedDate: day,
-              customStartTime: toUtcTimeOnly(first.startTime),
-              customEndTime: toUtcTimeOnly(first.endTime),
-              isSplitShift: true,
-              originalShiftId: originalId,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            },
-            {
-              userId: user.id,
-              shiftId: schedule.shiftId, // REUSE the template
-              assignedDate: day,
-              customStartTime: toUtcTimeOnly(second.startTime),
-              customEndTime: toUtcTimeOnly(second.endTime),
-              isSplitShift: true,
-              originalShiftId: originalId,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            }
-          );
-
-        } else {
-          // No resolution provided: log conflicts (kept)
-          for (const conflict of userConflicts) {
-            conflicts.push({
-              scheduleId: schedule.id,
-              userId: user.id,
-              userEmail: user.email,
-              conflictingShiftId: conflict.existingShiftId,
-              newShiftId: newShift.id,
-              assignedDate: day,
-              conflictDetails: {
-                existingShift: {
-                  start: conflict.existingShift?.startTime ?? new Date(Date.UTC(1970,0,1,8,0)),
-                  end: conflict.existingShift?.endTime ?? new Date(Date.UTC(1970,0,1,17,0)),
-                },
-                newShift: {
-                  start: newShift.startTime,
-                  end: newShift.endTime,
-                },
-              },
-              existingShiftName: conflict.existingShiftName,
-              newShiftName: newShift.shiftName,
-            });
-          }
-        }
-      } else {
-        // No conflicts: assign normally (no custom times)
-        userShiftData.push({
-          userId: user.id,
-          shiftId: schedule.shiftId,
-          assignedDate: day,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-      }
-    }
-  }
-
-  return { userShiftData, conflicts };
+/**
+ * Extract UTC minutes-since-midnight from a stored shift time.
+ * Shift times are stored as ISO strings anchored to epoch date 1970-01-01,
+ * e.g. "1970-01-01T08:00:00.000Z" → 480 minutes.
+ */
+const toMinutes = (isoTime) => {
+  const d = new Date(isoTime);
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
 };
 
-async function updateUserShiftsForSchedule(schedule, conflictResolutions) {
-  try {
-    const now = new Date();
-    const normalizedNow = normalizeDate(now);
-    const windowLengthDays = 30;
-    const windowStart = normalizedNow;
-    const windowEnd = new Date(windowStart);
-    windowEnd.setDate(windowEnd.getDate() + windowLengthDays);
+/**
+ * Returns true only when shiftA and shiftB have genuinely overlapping time windows.
+ *
+ * Key rule: strict inequality ( < / > ) means touching endpoints do NOT conflict.
+ * Example: shiftA ends 08:00, shiftB starts 08:00 → no overlap → returns false.
+ * This is exactly what allows Driver/Aide AM (06:45–08:00), Regular (08:00–13:30),
+ * and Driver/Aide PM (13:30–14:45) to coexist on the same calendar date.
+ *
+ * Midnight-crossing shifts (e.g. 22:00–06:00) are split into two intervals
+ * [22:00, 24:00) and [00:00, 06:00) so the comparison still works correctly.
+ */
+const timesOverlap = (shiftA, shiftB) => {
+  const aStart = toMinutes(shiftA.startTime);
+  const aEnd   = toMinutes(shiftA.endTime);
+  const bStart = toMinutes(shiftB.startTime);
+  const bEnd   = toMinutes(shiftB.endTime);
 
-    const scheduleStart = normalizeDate(schedule.startDate);
-    let scheduleEnd = schedule.endDate ? normalizeDate(schedule.endDate) : null;
+  // Does [s1, e1) overlap with [s2, e2)?  Strict so touching edges don't conflict.
+  const overlaps = (s1, e1, s2, e2) => s1 < e2 && e1 > s2;
 
-    if (scheduleEnd && scheduleEnd <= scheduleStart) scheduleEnd = null;
-    if (scheduleEnd && scheduleEnd < normalizedNow) return { conflicts: [] };
+  // Build interval list — midnight-crossing shifts wrap into two intervals
+  const toIntervals = (start, end, crosses) =>
+    crosses ? [[start, 1440], [0, end]] : [[start, end]];
 
-    const windowEffectiveStart = scheduleStart > normalizedNow ? scheduleStart : normalizedNow;
-    let effectiveWindowEnd = scheduleEnd ? (scheduleEnd < windowEnd ? scheduleEnd : windowEnd) : windowEnd;
+  const aIntervals = toIntervals(aStart, aEnd, shiftA.crossesMidnight);
+  const bIntervals = toIntervals(bStart, bEnd, shiftB.crossesMidnight);
 
-    if (windowEffectiveStart > effectiveWindowEnd) return { conflicts: [] };
-
-    const byDayPart = schedule.recurrencePattern.split(";").find((p) => p.startsWith("BYDAY="));
-    const daysArray = byDayPart ? byDayPart.replace("BYDAY=", "").split(",") : [];
-    const dayMap = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
-    const validDays = daysArray.map((day) => dayMap[day]).filter((d) => d !== undefined);
-
-    const occurrenceDates = [];
-    let currentDate = new Date(windowEffectiveStart);
-    while (currentDate <= effectiveWindowEnd) {
-      if (validDays.includes(currentDate.getDay())) occurrenceDates.push(new Date(currentDate));
-      currentDate.setDate(currentDate.getDate() + 1);
+  for (const [s1, e1] of aIntervals) {
+    for (const [s2, e2] of bIntervals) {
+      if (overlaps(s1, e1, s2, e2)) return true;
     }
-
-    let users = [];
-    if (schedule.assignedToAll) {
-      users = await prisma.user.findMany({ where: { companyId: schedule.companyId } });
-    } else if (schedule.assignedToDepartment) {
-      users = await prisma.user.findMany({
-        where: { companyId: schedule.companyId, departmentId: schedule.departmentId },
-      });
-    } else if (schedule.assignedUserId) {
-      const user = await prisma.user.findUnique({ where: { id: schedule.assignedUserId } });
-      if (user) users.push(user);
-    }
-
-    await prisma.userShift.deleteMany({
-      where: {
-        shiftId: schedule.shiftId,
-        userId: { in: users.map(u => u.id) },
-        assignedDate: {
-          gte: windowEffectiveStart,
-          lte: effectiveWindowEnd,
-        },
-      },
-    });
-
-    const { userShiftData, conflicts, removals = [] } =
-    await createUserShiftsWithConflictDetection(users, schedule, occurrenceDates, conflictResolutions);
-
-    await prisma.$transaction(async (trx) => {
-      if (removals.length) {
-        await trx.userShift.deleteMany({
-          where: { OR: removals.map(r => ({
-            userId: r.userId,
-            assignedDate: r.assignedDate,
-            shiftId: r.shiftId,
-          })) }
-        });
-      }
-    
-      if (userShiftData.length) {
-        await trx.userShift.createMany({ data: userShiftData });
-      }
-    
-      if (conflicts.length) {
-        await trx.scheduleConflict.createMany({
-          data: conflicts.map(c => ({
-            scheduleId: c.scheduleId,
-            userId: c.userId,
-            conflictingShiftId: c.conflictingShiftId,
-            newShiftId: c.newShiftId,
-            assignedDate: c.assignedDate,
-            status: "PENDING",
-            conflictDetails: c.conflictDetails,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })),
-        });
-      }
-    });
-
-    return { conflicts };
-  } catch (error) {
-    console.error("Error updating user shifts for schedule:", error);
-    throw error;
   }
-}
-
-const preflightConflictCheck = async (req, res) => {
-  try {
-    const {
-      shiftId,
-      recurrencePattern,
-      startDate,
-      endDate,
-      assignedToAll,
-      assignedToDepartment,
-      departmentId,
-      assignedUserId,
-    } = req.body;
-
-    if (!shiftId || !recurrencePattern || !startDate) {
-      return res.status(400).json({ message: "Required fields are missing." });
-    }
-
-    const assignmentCount = [assignedToAll, assignedToDepartment, !!assignedUserId].filter(Boolean).length;
-    if (assignmentCount !== 1) {
-      return res.status(400).json({ message: "Exactly one assignment type must be specified." });
-    }
-    if (assignedToDepartment && !departmentId) {
-      return res.status(400).json({ message: "Department ID is required when assigning to department." });
-    }
-
-    const mockSchedule = {
-      id: "mock-id",
-      companyId: req.user.companyId,
-      shiftId,
-      recurrencePattern,
-      startDate: new Date(startDate),
-      endDate: endDate ? new Date(endDate) : null,
-      assignedToAll: assignedToAll || false,
-      assignedToDepartment: assignedToDepartment || false,
-      departmentId: assignedToDepartment ? departmentId : null,
-      assignedUserId: assignedToAll || assignedToDepartment ? null : assignedUserId,
-    };
-
-    const newShift = await prisma.shift.findUnique({ where: { id: shiftId } });
-    if (!newShift) return res.status(400).json({ message: "Shift not found." });
-
-    let targetUsers = [];
-
-    if (mockSchedule.assignedToAll) {
-      targetUsers = await prisma.user.findMany({
-        where: { companyId: req.user.companyId },
-        select: {
-          id: true,
-          email: true,
-          profile: { select: { firstName: true, lastName: true } },
-        },
-      });
-    } else if (mockSchedule.assignedToDepartment) {
-      targetUsers = await prisma.user.findMany({
-        where: { companyId: req.user.companyId, departmentId: mockSchedule.departmentId },
-        select: {
-          id: true,
-          email: true,
-          profile: { select: { firstName: true, lastName: true } },
-        },
-      });
-    } else if (mockSchedule.assignedUserId) {
-      const user = await prisma.user.findUnique({
-        where: { id: mockSchedule.assignedUserId },
-        select: {
-          id: true,
-          email: true,
-          profile: { select: { firstName: true, lastName: true } },
-        },
-      });
-      if (user) targetUsers.push(user);
-    }
-
-    const now = new Date();
-    const normalizedNow = normalizeDate(now);
-    const windowLengthDays = 30;
-    const windowStart = normalizedNow;
-    const windowEnd = new Date(windowStart);
-    windowEnd.setDate(windowEnd.getDate() + windowLengthDays);
-
-    const scheduleStart = normalizeDate(mockSchedule.startDate);
-    let scheduleEnd = mockSchedule.endDate ? normalizeDate(mockSchedule.endDate) : null;
-    if (scheduleEnd && scheduleEnd <= scheduleStart) scheduleEnd = null;
-    if (scheduleEnd && scheduleEnd < normalizedNow)
-      return res.status(200).json({ message: "Schedule is in the past.", successful: [], conflicts: [] });
-
-    const windowEffectiveStart = scheduleStart > normalizedNow ? scheduleStart : normalizedNow;
-    let effectiveWindowEnd = scheduleEnd ? (scheduleEnd < windowEnd ? scheduleEnd : windowEnd) : windowEnd;
-
-    if (windowEffectiveStart > effectiveWindowEnd)
-      return res.status(200).json({ message: "No valid dates in schedule window.", successful: [], conflicts: [] });
-
-    const byDayPart = mockSchedule.recurrencePattern.split(";").find((p) => p.startsWith("BYDAY="));
-    const daysArray = byDayPart ? byDayPart.replace("BYDAY=", "").split(",") : [];
-    const dayMap = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
-    const validDays = daysArray.map((day) => dayMap[day]).filter((d) => d !== undefined);
-
-    const occurrenceDates = [];
-    let currentDate = new Date(windowEffectiveStart);
-    while (currentDate <= effectiveWindowEnd) {
-      if (validDays.includes(currentDate.getDay())) {
-        occurrenceDates.push(new Date(currentDate));
-      }
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-
-    const successful = [];
-    const conflicts = [];
-    const usersWithConflicts = new Set();
-
-    for (const user of targetUsers) {
-      let userHasConflicts = false;
-
-      for (const date of occurrenceDates) {
-        const userConflicts = await detectTimeConflicts(user.id, newShift, new Date(date));
-
-        if (userConflicts.length > 0) {
-          userHasConflicts = true;
-          usersWithConflicts.add(user.id);
-
-          for (const conflict of userConflicts) {
-            const conflictingShift = await prisma.shift.findUnique({
-              where: { id: conflict.existingShiftId },
-            });
-
-            conflicts.push({
-              userId: user.id,
-              user,
-              conflictDate: date.toISOString(),
-              conflictingShiftId: conflict.existingShiftId,
-              newShiftId: newShift.id,
-              existingShift: {
-                id: conflictingShift.id,
-                shiftName: conflictingShift.shiftName,
-                startTime:
-                  conflictingShift.startTime instanceof Date
-                    ? conflictingShift.startTime.toLocaleTimeString("en-US", {
-                        hour12: false,
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : conflictingShift.startTime,
-                endTime:
-                  conflictingShift.endTime instanceof Date
-                    ? conflictingShift.endTime.toLocaleTimeString("en-US", {
-                        hour12: false,
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : conflictingShift.endTime,
-                crossesMidnight: conflictingShift.crossesMidnight,
-              },
-              newShift: {
-                id: newShift.id,
-                shiftName: newShift.shiftName,
-                startTime:
-                  newShift.startTime instanceof Date
-                    ? newShift.startTime.toLocaleTimeString("en-US", {
-                        hour12: false,
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : newShift.startTime,
-                endTime:
-                  newShift.endTime instanceof Date
-                    ? newShift.endTime.toLocaleTimeString("en-US", {
-                        hour12: false,
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : newShift.endTime,
-                crossesMidnight: newShift.crossesMidnight,
-              },
-            });
-          }
-        }
-      }
-
-      if (!userHasConflicts) successful.push(user);
-    }
-
-    const uniqueConflicts = conflicts.reduce((acc, conflict) => {
-      const exists = acc.find(
-        (c) =>
-          c.userId === conflict.userId &&
-          c.conflictingShiftId === conflict.conflictingShiftId &&
-          c.newShiftId === conflict.newShiftId &&
-          new Date(c.conflictDate).toDateString() === new Date(conflict.conflictDate).toDateString()
-      );
-      if (!exists) acc.push(conflict);
-      return acc;
-    }, []);
-
-    return res.status(200).json({
-      message: "Preflight conflict check completed successfully.",
-      successful,
-      conflicts: uniqueConflicts,
-      summary: {
-        totalUsers: targetUsers.length,
-        successfulUsers: successful.length,
-        conflictedUsers: usersWithConflicts.size,
-        totalConflicts: uniqueConflicts.length,
-        occurrenceDates: occurrenceDates.length,
-      },
-    });
-  } catch (error) {
-    console.error("Error in preflight conflict check:", error);
-    return res.status(500).json({ message: "Internal server error." });
-  }
+  return false;
 };
 
+/**
+ * Create a recurring shift schedule
+ */
 const createShiftSchedule = async (req, res) => {
   try {
-    const {
-      shiftId,
-      recurrencePattern,
-      startDate,
-      endDate,
-      assignedToAll,
-      assignedToDepartment,
-      departmentId,
-      assignedUserId,
-      conflictResolutions
-    } = req.body;
+    const { shiftId, daysOfWeek, startDate, endDate, assignmentType, targetId, replaceConflicts, skipConflicts } = req.body;
+    const { companyId } = req.user;
 
-    if (!shiftId || !recurrencePattern || !startDate) {
-      return res.status(400).json({ message: "Required fields are missing." });
+    // Validation
+    if (!shiftId || !Array.isArray(daysOfWeek) || daysOfWeek.length === 0 || !startDate || !endDate) {
+      return res.status(400).json({
+        message: "Missing required fields: shiftId, daysOfWeek (array), startDate, endDate"
+      });
     }
 
-    const assignmentCount = [assignedToAll, assignedToDepartment, !!assignedUserId].filter(Boolean).length;
-    if (assignmentCount !== 1) {
-      return res.status(400).json({ message: "Exactly one assignment type must be specified." });
-    }
-    if (assignedToDepartment && !departmentId) {
-      return res.status(400).json({ message: "Department ID is required when assigning to department." });
+    if (!['individual', 'department', 'all'].includes(assignmentType)) {
+      return res.status(400).json({ message: "Invalid assignmentType. Must be: individual, department, or all" });
     }
 
-    const schedule = await prisma.shiftSchedule.create({
-      data: {
-        companyId: req.user.companyId,
-        shiftId,
-        recurrencePattern,
-        startDate: new Date(startDate),
-        endDate: endDate ? new Date(endDate) : null,
-        assignedToAll: assignedToAll || false,
-        assignedToDepartment: assignedToDepartment || false,
-        departmentId: assignedToDepartment ? departmentId : null,
-        assignedUserId: assignedToAll || assignedToDepartment ? null : assignedUserId,
-      },
-      include: { shift: true },
+    if (assignmentType !== 'all' && !targetId) {
+      return res.status(400).json({ message: "targetId required for individual/department assignment" });
+    }
+
+    // Ensure daysOfWeek are stored as integers
+    const normalizedDays = daysOfWeek.map(d => parseInt(d, 10));
+
+    // Validate days are 0-6
+    if (normalizedDays.some(d => isNaN(d) || d < 0 || d > 6)) {
+      return res.status(400).json({
+        message: "Invalid daysOfWeek values. Must be integers 0-6 (0=Sunday, 6=Saturday)"
+      });
+    }
+
+    // Verify shift exists and belongs to company
+    const shift = await prisma.shift.findFirst({
+      where: { id: shiftId, companyId },
     });
 
-    const { conflicts } = await updateUserShiftsForSchedule(schedule, conflictResolutions);
+    if (!shift) {
+      return res.status(404).json({ message: "Shift not found" });
+    }
 
-    return res.status(201).json({
-      message: "Shift schedule created successfully.",
-      data: schedule,
-      conflicts:
-        conflicts.length > 0
-          ? {
-              count: conflicts.length,
-              details: conflicts.slice(0, 5),
-              totalAffectedUsers: [...new Set(conflicts.map((c) => c.userId))].length,
-            }
-          : null,
-    });
-  } catch (error) {
-    console.error("Error creating shift schedule and assignments:", error);
-    return res.status(500).json({ message: "Internal server error." });
-  }
-};
+    // Resolve target users based on assignment type
+    let targetUsers = [];
+    if (assignmentType === 'all') {
+      targetUsers = await prisma.user.findMany({
+        where: { companyId, status: 'active' },
+        select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
+      });
+    } else if (assignmentType === 'department') {
+      targetUsers = await prisma.user.findMany({
+        where: { companyId, departmentId: targetId, status: 'active' },
+        select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
+      });
+    } else {
+      const user = await prisma.user.findFirst({
+        where: { id: targetId, companyId },
+        select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
+      });
+      if (!user) {
+        return res.status(404).json({ message: "Target user not found" });
+      }
+      targetUsers = [user];
+    }
 
-const getShiftSchedules = async (req, res) => {
-  try {
-    const schedules = await prisma.shiftSchedule.findMany({
-      where: { companyId: req.user.companyId },
-      include: {
-        shift: true,
-        department: {
-          select: { id: true, name: true },
+    if (targetUsers.length === 0) {
+      return res.status(400).json({ message: "No users found for assignment" });
+    }
+
+    const scheduleDates = generateScheduleDates(normalizedDays, startDate, endDate);
+
+    if (scheduleDates.length === 0) {
+      return res.status(400).json({
+        message: "No dates match the selected days within the date range"
+      });
+    }
+
+    const dateObjects = scheduleDates.map(d => new Date(d));
+
+    // ── Time-aware conflict check ─────────────────────────────────────────────
+    // Fetch each existing UserShift on the same dates AND include its shift's
+    // startTime/endTime/crossesMidnight so we can check real time overlap.
+    // Sequential shifts (e.g. ends 08:00 / starts 08:00) do NOT conflict.
+    const conflicts = [];
+    for (const user of targetUsers) {
+      const existingShifts = await prisma.userShift.findMany({
+        where: {
+          userId: user.id,
+          assignedDate: { in: dateObjects },
         },
-        assignedUser: {
-          select: {
-            id: true,
-            email: true,
-            profile: {
-              select: { firstName: true, lastName: true },
+        select: {
+          id: true,           // needed for safe targeted deletion on replaceConflicts
+          assignedDate: true,
+          shift: {
+            select: {
+              startTime:       true,
+              endTime:         true,
+              crossesMidnight: true,
             },
           },
-        },
-        _count: { select: { conflicts: { where: { status: "PENDING" } } } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    const formatted = schedules.map((s) => ({
-      ...s,
-      startDate: s.startDate.toISOString(),
-      endDate: s.endDate ? s.endDate.toISOString() : null,
-      createdAt: s.createdAt.toISOString(),
-      updatedAt: s.updatedAt.toISOString(),
-      pendingConflicts: s._count.conflicts,
-    }));
-
-    return res.status(200).json({
-      message: "Shift schedules retrieved successfully.",
-      data: formatted,
-    });
-  } catch (error) {
-    console.error("Error fetching shift schedules:", error);
-    return res.status(500).json({ message: "Internal server error." });
-  }
-};
-
-const updateShiftSchedule = async (req, res) => {
-  try {
-    const scheduleId = req.params.id;
-    const {
-      recurrencePattern,
-      startDate,
-      endDate,
-      assignedToAll,
-      assignedToDepartment,
-      departmentId,
-      assignedUserId,
-    } = req.body;
-
-    const assignmentCount = [assignedToAll, assignedToDepartment, !!assignedUserId].filter(Boolean).length;
-    if (assignmentCount !== 1) {
-      return res.status(400).json({ message: "Exactly one assignment type must be specified." });
-    }
-
-    const updatedSchedule = await prisma.shiftSchedule.update({
-      where: { id: scheduleId },
-      data: {
-        recurrencePattern,
-        startDate: new Date(startDate),
-        endDate: endDate ? new Date(endDate) : null,
-        assignedToAll: assignedToAll || false,
-        assignedToDepartment: assignedToDepartment || false,
-        departmentId: assignedToDepartment ? departmentId : null,
-        assignedUserId: assignedToAll || assignedToDepartment ? null : assignedUserId,
-      },
-      include: { shift: true },
-    });
-
-    const { conflicts } = await updateUserShiftsForSchedule(updatedSchedule);
-
-    return res.status(200).json({
-      message: "Shift schedule updated successfully.",
-      data: updatedSchedule,
-      conflicts:
-        conflicts.length > 0
-          ? {
-              count: conflicts.length,
-              details: conflicts.slice(0, 5),
-              totalAffectedUsers: [...new Set(conflicts.map((c) => c.userId))].length,
-            }
-          : null,
-    });
-  } catch (error) {
-    console.error("Error updating shift schedule:", error);
-    return res.status(500).json({ message: "Internal server error." });
-  }
-};
-
-const deleteShiftSchedule = async (req, res) => {
-  try {
-    const scheduleId = req.params.id;
-
-    const schedule = await prisma.shiftSchedule.findUnique({ where: { id: scheduleId } });
-    if (schedule) {
-      const now = new Date();
-      const normalizedNow = normalizeDate(now);
-      const scheduleStart = normalizeDate(schedule.startDate);
-      let scheduleEnd = schedule.endDate ? normalizeDate(schedule.endDate) : null;
-
-      if (scheduleEnd && scheduleEnd <= scheduleStart) scheduleEnd = null;
-
-      const windowEffectiveStart = scheduleStart > normalizedNow ? scheduleStart : normalizedNow;
-      const windowLengthDays = 30;
-      const windowEnd = new Date(windowEffectiveStart);
-      windowEnd.setDate(windowEnd.getDate() + windowLengthDays);
-
-      let effectiveWindowEnd = scheduleEnd ? (scheduleEnd < windowEnd ? scheduleEnd : windowEnd) : windowEnd;
-
-      await prisma.userShift.deleteMany({
-        where: {
-          shiftId: schedule.shiftId,
-          assignedDate: { gte: windowEffectiveStart, lte: effectiveWindowEnd },
         },
       });
 
-      await prisma.scheduleConflict.deleteMany({ where: { scheduleId } });
+      // Keep only entries whose time window actually overlaps with the new shift.
+      // This lets sequential shifts (Driver/Aide AM → Regular → Driver/Aide PM)
+      // coexist on the same date without triggering false conflicts.
+      const realConflicts = existingShifts.filter(
+        us => us.shift && timesOverlap(shift, us.shift)
+      );
+
+      if (realConflicts.length > 0) {
+        conflicts.push({
+          userId:        user.id,
+          userName:      `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.email,
+          userEmail:     user.email,
+          conflictCount: realConflicts.length,
+          conflictDates: realConflicts.map(s => s.assignedDate),
+          // Track IDs so replaceConflicts only removes the overlapping records,
+          // leaving non-overlapping shifts on the same date untouched.
+          conflictIds:   realConflicts.map(s => s.id),
+        });
+      }
     }
 
-    await prisma.shiftSchedule.delete({ where: { id: scheduleId } });
+    // ── Conflict resolution ──────────────────────────────────────────────────
+    // replaceConflicts=true  → delete all conflicting UserShifts, then create everything
+    // skipConflicts=true     → skip only conflicting dates per user, create the rest
+    // neither                → return 409 so the user can decide
+    if (conflicts.length > 0 && !replaceConflicts && !skipConflicts) {
+      return res.status(409).json({
+        message: "Scheduling conflicts detected",
+        conflicts,
+        totalConflicts: conflicts.length,
+      });
+    }
 
-    return res.status(200).json({ message: "Shift schedule deleted successfully." });
+    if (conflicts.length > 0 && replaceConflicts) {
+      // Delete only the UserShift records that actually overlap in time.
+      // Using IDs (not userId+date) ensures non-overlapping shifts on the same
+      // date (e.g. Driver/Aide AM) are never touched.
+      const allConflictIds = conflicts.flatMap(c => c.conflictIds);
+      await prisma.userShift.deleteMany({
+        where: { id: { in: allConflictIds } },
+      });
+    }
+
+    // Create the ShiftSchedule record
+    const schedule = await prisma.shiftSchedule.create({
+      data: {
+        companyId,
+        shiftId,
+        daysOfWeek: normalizedDays,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        isActive: true,
+        assignmentType,
+        targetId: assignmentType === 'all' ? null : targetId,
+        createdBy: req.user.id,
+      },
+    });
+
+    // Build UserShift records — when skipping conflicts, exclude conflicting dates per user
+    const conflictMap = {};
+    if (skipConflicts) {
+      conflicts.forEach(c => {
+        conflictMap[c.userId] = new Set(
+          c.conflictDates.map(d => new Date(d).toISOString().split('T')[0])
+        );
+      });
+    }
+
+    const userShiftData = [];
+    for (const user of targetUsers) {
+      const blockedDates = conflictMap[user.id] || new Set();
+      for (const date of scheduleDates) {
+        if (blockedDates.has(date)) continue; // skip this date for this user
+        userShiftData.push({
+          userId: user.id,
+          shiftId,
+          assignedDate: new Date(date),
+          status: 'upcoming',
+          scheduleId: schedule.id,
+          createdFrom: 'schedule',
+        });
+      }
+    }
+
+    await prisma.userShift.createMany({ data: userShiftData });
+
+    // Notifications
+    await notifyManagementScheduleCreated(companyId, {
+      shiftName: shift.shiftName,
+      daysOfWeek: normalizedDays,
+      assignmentType,
+      targetCount: targetUsers.length,
+      totalShifts: userShiftData.length,
+    });
+
+    for (const user of targetUsers) {
+      await notifyEmployeeScheduleCreated(user.id, {
+        shiftName: shift.shiftName,
+        daysOfWeek: normalizedDays,
+        startDate,
+        endDate,
+        totalDays: scheduleDates.length,
+      });
+    }
+
+    return res.status(201).json({
+      message: "Schedule created successfully",
+      data: {
+        schedule,
+        assignedUsers: targetUsers.length,
+        totalShifts: userShiftData.length,
+        dates: scheduleDates.length,
+        skipped: conflicts.length > 0 && skipConflicts ? conflicts.reduce((s, c) => s + c.conflictCount, 0) : 0,
+      },
+    });
   } catch (error) {
-    console.error("Error deleting shift schedule:", error);
-    return res.status(500).json({ message: "Internal server error." });
+    console.error("Error creating schedule:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-const getShiftSchedulesEnhanced = async (req, res) => {
+/**
+ * Get all shift schedules
+ */
+const getShiftSchedules = async (req, res) => {
   try {
-    const { shiftName, userEmail, search } = req.query;
+    const { companyId } = req.user;
+    const { isActive } = req.query;
+
+    const where = { companyId };
+    if (isActive !== undefined) {
+      where.isActive = isActive === "true";
+    }
 
     const schedules = await prisma.shiftSchedule.findMany({
-      where: { companyId: req.user.companyId },
+      where,
       include: {
-        shift: true,
-        department: {
-          select: { id: true, name: true },
-        },
-        assignedUser: {
+        shift: {
           select: {
-            id: true,
-            email: true,
-            profile: {
-              select: { firstName: true, lastName: true },
-            },
-          },
-        },
-        _count: {
-          select: {
-            conflictsAsSchedule: { where: { status: "PENDING" } },
+            shiftName: true,
+            startTime: true,
+            endTime: true,
           },
         },
       },
       orderBy: { createdAt: "desc" },
     });
 
-    let filtered = schedules;
-
-    if (shiftName) {
-      filtered = filtered.filter((s) =>
-        s.shift.shiftName.toLowerCase().includes(shiftName.toLowerCase())
-      );
-    }
-
-    if (userEmail && !filtered[0]?.assignedToAll && !filtered[0]?.assignedToDepartment) {
-      filtered = filtered.filter((s) =>
-        s.assignedUser?.email.toLowerCase().includes(userEmail.toLowerCase())
-      );
-    }
-
-    if (search) {
-      const s = search.toLowerCase();
-      filtered = filtered.filter(
-        (f) =>
-          f.shift.shiftName.toLowerCase().includes(s) ||
-          f.assignedUser?.email.toLowerCase().includes(s) ||
-          f.department?.name.toLowerCase().includes(s)
-      );
-    }
-
-    const formatted = filtered.map((s) => ({
-      ...s,
-      startDate: s.startDate.toISOString(),
-      endDate: s.endDate ? s.endDate.toISOString() : null,
-      createdAt: s.createdAt.toISOString(),
-      updatedAt: s.updatedAt.toISOString(),
-      assignedUserName: s.assignedToAll
-        ? "All Employees"
-        : s.assignedToDepartment
-        ? `Department: ${s.department?.name}`
-        : s.assignedUser
-        ? `${s.assignedUser.profile?.firstName} ${s.assignedUser.profile?.lastName}`
-        : "Unassigned",
-      assignedUserEmail: s.assignedToAll
-        ? "all@company"
-        : s.assignedToDepartment
-        ? `dept-${s.department?.id}@company`
-        : s.assignedUser?.email || "unassigned",
-      pendingConflicts: s._count.conflictsAsSchedule,
-    }));
-
     return res.status(200).json({
-      message: "Enhanced shift schedules retrieved successfully.",
-      data: formatted,
+      message: "Schedules retrieved successfully",
+      data: schedules,
     });
   } catch (error) {
-    console.error("Error fetching enhanced shift schedules:", error);
-    return res.status(500).json({ message: "Internal server error." });
+    console.error("Error getting schedules:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// ---------------- EXPORT ----------------
+/**
+ * Get single schedule with details
+ */
+const getShiftScheduleById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { companyId } = req.user;
+
+    const schedule = await prisma.shiftSchedule.findFirst({
+      where: { id, companyId },
+      include: {
+        shift: true,
+        company: {
+          select: { name: true },
+        },
+      },
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+
+    const assignmentCount = await prisma.userShift.count({
+      where: { scheduleId: id },
+    });
+
+    return res.status(200).json({
+      message: "Schedule retrieved successfully",
+      data: {
+        ...schedule,
+        assignmentCount,
+      },
+    });
+  } catch (error) {
+    console.error("Error getting schedule:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * Update a shift schedule
+ *
+ * BUG FIX: Previously only accepted isActive and endDate.
+ * Now accepts the full set of editable fields:
+ *   shiftId, daysOfWeek, startDate, endDate, assignmentType, targetId, isActive
+ *
+ * When daysOfWeek, startDate, endDate, shiftId, assignmentType, or targetId change,
+ * all existing UserShift records linked to this schedule are deleted and regenerated
+ * from scratch so the assignments stay in sync with the new schedule definition.
+ */
+const updateShiftSchedule = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { companyId } = req.user;
+    const {
+      shiftId,
+      daysOfWeek,
+      startDate,
+      endDate,
+      assignmentType,
+      targetId,
+      isActive,
+    } = req.body;
+
+    // Verify schedule exists and belongs to this company
+    const existingSchedule = await prisma.shiftSchedule.findFirst({
+      where: { id, companyId },
+    });
+
+    if (!existingSchedule) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+
+    // ── Determine final values (fall back to existing when not provided) ──
+    const finalShiftId      = shiftId      ?? existingSchedule.shiftId;
+    const finalStartDate    = startDate    ?? existingSchedule.startDate;
+    const finalEndDate      = endDate      ?? existingSchedule.endDate;
+    const finalAssignmentType = assignmentType ?? existingSchedule.assignmentType;
+    const finalTargetId     = finalAssignmentType === 'all'
+      ? null
+      : (targetId ?? existingSchedule.targetId);
+
+    // Normalize daysOfWeek — fall back to existing if not provided
+    let finalDays;
+    if (Array.isArray(daysOfWeek) && daysOfWeek.length > 0) {
+      finalDays = daysOfWeek.map(d => parseInt(d, 10));
+      if (finalDays.some(d => isNaN(d) || d < 0 || d > 6)) {
+        return res.status(400).json({
+          message: "Invalid daysOfWeek values. Must be integers 0-6 (0=Sunday, 6=Saturday)",
+        });
+      }
+    } else {
+      finalDays = existingSchedule.daysOfWeek;
+    }
+
+    // Validate assignment type
+    if (!['individual', 'department', 'all'].includes(finalAssignmentType)) {
+      return res.status(400).json({ message: "Invalid assignmentType. Must be: individual, department, or all" });
+    }
+
+    if (finalAssignmentType !== 'all' && !finalTargetId) {
+      return res.status(400).json({ message: "targetId required for individual/department assignment" });
+    }
+
+    // Verify the shift exists and belongs to the company (in case shiftId changed)
+    const shift = await prisma.shift.findFirst({
+      where: { id: finalShiftId, companyId },
+    });
+    if (!shift) {
+      return res.status(404).json({ message: "Shift not found" });
+    }
+
+    // ── Detect whether schedule-defining fields changed ────────────────────
+    // If any of these changed, existing UserShift records are stale and must
+    // be deleted and regenerated. isActive-only edits skip regeneration.
+    const scheduleChanged =
+      finalShiftId !== existingSchedule.shiftId ||
+      finalDays.join(',') !== existingSchedule.daysOfWeek.join(',') ||
+      new Date(finalStartDate).toISOString() !== new Date(existingSchedule.startDate).toISOString() ||
+      new Date(finalEndDate).toISOString()   !== new Date(existingSchedule.endDate).toISOString() ||
+      finalAssignmentType !== existingSchedule.assignmentType ||
+      finalTargetId !== existingSchedule.targetId;
+
+    // ── Update the ShiftSchedule record ───────────────────────────────────
+    const updateData = {
+      shiftId:        finalShiftId,
+      daysOfWeek:     finalDays,
+      startDate:      new Date(finalStartDate),
+      endDate:        new Date(finalEndDate),
+      assignmentType: finalAssignmentType,
+      targetId:       finalTargetId,
+    };
+    if (isActive !== undefined) updateData.isActive = isActive;
+
+    const updatedSchedule = await prisma.shiftSchedule.update({
+      where: { id },
+      data: updateData,
+    });
+
+    // ── Regenerate UserShift records only when the schedule definition changed ──
+    if (scheduleChanged) {
+      // 1. Delete all existing UserShift records tied to this schedule
+      await prisma.userShift.deleteMany({ where: { scheduleId: id } });
+
+      // 2. Resolve the new set of target users
+      let targetUsers = [];
+      if (finalAssignmentType === 'all') {
+        targetUsers = await prisma.user.findMany({
+          where: { companyId, status: 'active' },
+          select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
+        });
+      } else if (finalAssignmentType === 'department') {
+        targetUsers = await prisma.user.findMany({
+          where: { companyId, departmentId: finalTargetId, status: 'active' },
+          select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
+        });
+      } else {
+        const user = await prisma.user.findFirst({
+          where: { id: finalTargetId, companyId },
+          select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
+        });
+        if (!user) {
+          return res.status(404).json({ message: "Target user not found" });
+        }
+        targetUsers = [user];
+      }
+
+      if (targetUsers.length === 0) {
+        // Schedule record is updated; just warn that no users matched
+        return res.status(200).json({
+          message: "Schedule updated successfully. No active users found for assignment.",
+          data: updatedSchedule,
+          regenerated: 0,
+        });
+      }
+
+      // 3. Generate new date list
+      const scheduleDates = generateScheduleDates(finalDays, finalStartDate, finalEndDate);
+
+      if (scheduleDates.length === 0) {
+        return res.status(200).json({
+          message: "Schedule updated successfully. No dates match the selected days within the date range.",
+          data: updatedSchedule,
+          regenerated: 0,
+        });
+      }
+
+      // 4. Create new UserShift records
+      const userShiftData = [];
+      for (const user of targetUsers) {
+        for (const date of scheduleDates) {
+          userShiftData.push({
+            userId:      user.id,
+            shiftId:     finalShiftId,
+            assignedDate: new Date(date),
+            status:      'upcoming',
+            scheduleId:  id,
+            createdFrom: 'schedule',
+          });
+        }
+      }
+
+      await prisma.userShift.createMany({ data: userShiftData });
+
+      return res.status(200).json({
+        message: "Schedule updated successfully",
+        data: updatedSchedule,
+        regenerated: userShiftData.length,
+      });
+    }
+
+    // isActive-only change — no regeneration needed
+    return res.status(200).json({
+      message: "Schedule updated successfully",
+      data: updatedSchedule,
+    });
+  } catch (error) {
+    console.error("Error updating schedule:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * Delete a shift schedule
+ */
+const deleteShiftSchedule = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { companyId } = req.user;
+    const { deleteAssignments = false } = req.query;
+
+    const existingSchedule = await prisma.shiftSchedule.findFirst({
+      where: { id, companyId },
+    });
+
+    if (!existingSchedule) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+
+    const assignmentCount = await prisma.userShift.count({
+      where: { scheduleId: id },
+    });
+
+    if (assignmentCount > 0 && !deleteAssignments) {
+      return res.status(400).json({
+        message: `Schedule has ${assignmentCount} active assignments. Set deleteAssignments=true to delete them.`,
+        assignmentCount,
+      });
+    }
+
+    if (deleteAssignments && assignmentCount > 0) {
+      await prisma.userShift.deleteMany({ where: { scheduleId: id } });
+    }
+
+    await prisma.shiftSchedule.delete({ where: { id } });
+
+    return res.status(200).json({
+      message: "Schedule deleted successfully",
+      assignmentsDeleted: deleteAssignments ? assignmentCount : 0,
+    });
+  } catch (error) {
+    console.error("Error deleting schedule:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 module.exports = {
   createShiftSchedule,
   getShiftSchedules,
+  getShiftScheduleById,
   updateShiftSchedule,
   deleteShiftSchedule,
-  getShiftSchedulesEnhanced,
-  preflightConflictCheck,
 };

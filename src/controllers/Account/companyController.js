@@ -250,36 +250,53 @@ const getCompanyScheduleStats = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const now = new Date();
-    
+
     const totalSchedules = await prisma.shiftSchedule.count({
-      where: { companyId }
+      where: { companyId },
     });
-    
+
+    // FIX: Prisma 6.x no longer accepts bare { endDate: null } inside OR.
+    // Must use { endDate: { equals: null } } explicitly.
     const activeSchedules = await prisma.shiftSchedule.count({
       where: {
         companyId,
         OR: [
-          { endDate: null },
-          { endDate: { gte: now } }
-        ]
-      }
+          { endDate: { equals: null } },
+          { endDate: { gte: now } },
+        ],
+      },
     });
-    
+
     const assignedEmployeesCount = await prisma.userShift.groupBy({
-      by: ['userId'],
+      by: ["userId"],
       where: {
         shift: { companyId },
-        assignedDate: { gte: now }
-      }
+        assignedDate: { gte: now },
+      },
     });
-    
+
+    // FIX: Compute avgDaysPerSchedule from real daysOfWeek data
+    // instead of the previous hardcoded 4.5
+    let avgDaysPerSchedule = 0;
+    if (totalSchedules > 0) {
+      const allSchedules = await prisma.shiftSchedule.findMany({
+        where: { companyId },
+        select: { daysOfWeek: true },
+      });
+      const totalDays = allSchedules.reduce(
+        (sum, s) => sum + (Array.isArray(s.daysOfWeek) ? s.daysOfWeek.length : 0),
+        0
+      );
+      avgDaysPerSchedule = parseFloat((totalDays / totalSchedules).toFixed(1));
+    }
+
     return res.status(200).json({
       message: "Company schedule statistics retrieved successfully.",
       data: {
         totalSchedules,
         activeSchedules,
         assignedEmployees: assignedEmployeesCount.length,
-        avgDaysPerSchedule: 4.5, // Calculate based on your needs
+        avgDaysPerSchedule,
       },
     });
   } catch (error) {

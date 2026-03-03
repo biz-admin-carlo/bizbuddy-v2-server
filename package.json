@@ -58,5 +58,6 @@
     "@workers": "./src/workers",
     "@jobs": "./src/jobs",
     "@emails": "./src/emails"
+
   }
 }

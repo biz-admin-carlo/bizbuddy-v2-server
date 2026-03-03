@@ -329,33 +329,34 @@ const viewContestTimeLogs = async (req, res) => {
       const { id } = req.params;
       const approverId = req.user.id;
   
-      // Find the contest request
+      // 1. Find the contest request
       const contest = await prisma.contestTimeLog.findUnique({
         where: { id },
-        include: {
-          timeLog: {
-            include: {
-              user: true,
-            },
-          },
-        },
+        include: { timeLog: { include: { user: true } } },
       });
   
       if (!contest) {
         return res.status(404).json({ message: "Contest request not found." });
       }
   
-      // Security: Verify same company or superadmin
+      // 2. Security check
       if (
         req.user.role !== "superadmin" &&
         contest.timeLog?.user?.companyId !== req.user.companyId
       ) {
-        return res
-          .status(403)
-          .json({ message: "Unauthorized to approve this contest request." });
+        return res.status(403).json({ message: "Unauthorized to approve this contest request." });
       }
   
-      // Update status to APPROVED
+      // 3. ✅ KEY FIX: Update the actual TimeLog with the corrected times
+      await prisma.timeLog.update({
+        where: { id: contest.timeLogId },
+        data: {
+          timeIn:  contest.requestedClockIn,
+          timeOut: contest.requestedClockOut,
+        },
+      });
+  
+      // 4. Mark the contest itself as APPROVED
       const updated = await prisma.contestTimeLog.update({
         where: { id },
         data: {
@@ -365,25 +366,18 @@ const viewContestTimeLogs = async (req, res) => {
           approvedReason: "Approved by admin/supervisor",
         },
         include: {
-          timeLog: {
-            include: {
-              user: true,
-            },
-          },
+          timeLog: { include: { user: true } },
           approver: true,
         },
       });
   
       return res.status(200).json({
-        message: "Contest request approved successfully.",
+        message: "Contest request approved. Punch log times have been updated.",
         data: updated,
       });
     } catch (error) {
       console.error("❌ Error approving contest request:", error);
-      return res.status(500).json({
-        message: "Internal server error.",
-        error: error.message,
-      });
+      return res.status(500).json({ message: "Internal server error.", error: error.message });
     }
   };
   

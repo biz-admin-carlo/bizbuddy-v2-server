@@ -253,7 +253,9 @@ async function sendMorningReport(companyId, missedClockIns, currentlyClockedIn) 
 /**
  * Send daily evening report to management
  */
-async function sendEveningReport(companyId, missedClockOuts, stillClockedIn) {
+async function sendEveningReport(companyId, missedClockOuts, stillClockedIn, options = {}) {
+  const { testEmail } = options;
+
   const company = await prisma.company.findUnique({
     where: { id: companyId },
   });
@@ -275,52 +277,61 @@ async function sendEveningReport(companyId, missedClockOuts, stillClockedIn) {
     },
   });
 
-  const emailPromises = managementUsers.map(async (manager) => {
-    // Internal notification
-    await createNotification({
-      userId: manager.id,
-      companyId,
-      departmentId: null,
-      notificationCode: 'DAILY_CLOCK_OUT_REPORT',
-      title: '📊 Evening Clock-Out Report',
-      message: `${missedClockOuts.length} employees missed clock-out. ${stillClockedIn.length} employees are still clocked in.`,
-      payload: {
-        missedCount: missedClockOuts.length,
-        stillClockedInCount: stillClockedIn.length,
-      },
-    });
+  const emailContext = (manager) => ({
+    managerName: manager.username,
+    companyName: company.name,
+    reportDate: new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }),
+    missedClockOuts,
+    stillClockedIn,
+    missedCount: missedClockOuts.length,
+    stillClockedInCount: stillClockedIn.length,
+    showAllClear: missedClockOuts.length === 0 && stillClockedIn.length === 0,
+    appUrl: process.env.CLIENT_URL,
+  });
 
-    // Email notification
-    if (manager.email) {
-      await sendEmailNotification({
-        to: manager.email,
-        subject: `🔔 Evening Clock-Out Report - ${company.name}`,
-        templateName: 'eveningReport',
-        context: {
-          managerName: manager.username,
-          companyName: company.name,
-          reportDate: new Date().toLocaleDateString('en-US', { 
-            weekday: 'long', 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
-          }),
-          missedClockOuts,
-          stillClockedIn,
-          missedCount: missedClockOuts.length,
-          stillClockedInCount: stillClockedIn.length,
-          showAllClear: missedClockOuts.length === 0 && stillClockedIn.length === 0, // ✅ KEY FIX
-          appUrl: process.env.CLIENT_URL,
-        },
-        notificationType: 'DAILY_CLOCK_OUT_REPORT',
-        recipientUserId: manager.id,
+  const emailPromises = managementUsers.map(async (manager) => {
+    // Internal notification — skip in test mode to avoid polluting the DB
+    if (!testEmail) {
+      await createNotification({
+        userId: manager.id,
         companyId,
-        metadata: {
+        departmentId: null,
+        notificationCode: 'DAILY_CLOCK_OUT_REPORT',
+        title: 'Evening Clock-Out Report',
+        message: `${missedClockOuts.length} employees missed clock-out. ${stillClockedIn.length} employees are still clocked in.`,
+        payload: {
           missedCount: missedClockOuts.length,
           stillClockedInCount: stillClockedIn.length,
         },
       });
     }
+
+    // In test mode, send only one email to testEmail using the first manager's context.
+    // Skip all subsequent managers so we don't send duplicate test emails per company.
+    const recipientEmail = testEmail || manager.email;
+    if (!recipientEmail) return;
+    if (testEmail && managementUsers.indexOf(manager) !== 0) return;
+
+    await sendEmailNotification({
+      to: recipientEmail,
+      subject: testEmail
+        ? `[TEST] Evening Clock-Out Report - ${company.name}`
+        : `Evening Clock-Out Report - ${company.name}`,
+      templateName: 'eveningReport',
+      context: emailContext(manager),
+      notificationType: 'DAILY_CLOCK_OUT_REPORT',
+      recipientUserId: manager.id,
+      companyId,
+      metadata: {
+        missedCount: missedClockOuts.length,
+        stillClockedInCount: stillClockedIn.length,
+      },
+    });
   });
 
   await Promise.all(emailPromises);

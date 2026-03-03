@@ -77,6 +77,87 @@ async function calculateLateHoursForUser(userId, punchInDate) {
   return +(minutesLate / 60).toFixed(2);
 }
 
+// Valid punch types — mirrors the PunchType enum in the Prisma schema
+// DRIVER_AIDE_AM : non-driver clocked in 45+ min before scheduled start
+// DRIVER_AIDE_PM : non-driver clocked out 45+ min after scheduled end
+const VALID_PUNCH_TYPES = [
+  "REGULAR",
+  "DRIVER_AIDE",
+  "DRIVER_AIDE_AM",
+  "DRIVER_AIDE_PM",
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/timelogs/today-shift
+// Returns the employee's UserShift for today (if any), including the parent
+// Shift template so the frontend can read startTime and endTime.
+// Used by Punch.jsx on mount to:
+//   1. Show a "no schedule today" reminder for all companies
+//   2. Compute the 45-min early/late thresholds for DayCare non-driver employees
+// ─────────────────────────────────────────────────────────────────────────────
+const getTodayShift = async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ message: "Unauthorized" });
+    const userId = req.user.id;
+
+    const now = new Date();
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const userShift = await prisma.userShift.findFirst({
+      where: {
+        userId,
+        assignedDate: { gte: dayStart, lte: dayEnd },
+      },
+      include: { shift: true },
+    });
+
+    if (!userShift) {
+      return res.status(200).json({ data: null });
+    }
+
+    // Extract HH:MM from the epoch-anchor ISO timestamps stored on the Shift
+    // e.g. "1970-01-01T08:00:00.000Z" → { hours: 8, minutes: 0 }
+    const parseShiftTime = (isoString) => {
+      if (!isoString) return null;
+      const d = new Date(isoString);
+      return { hours: d.getUTCHours(), minutes: d.getUTCMinutes() };
+    };
+
+    const startParsed = parseShiftTime(userShift.shift?.startTime);
+    const endParsed   = parseShiftTime(userShift.shift?.endTime);
+
+    // Build today's actual wall-clock DateTime for the shift boundaries
+    // so the frontend can compare directly with Date.now()
+    const toTodayMs = (parsed) => {
+      if (!parsed) return null;
+      const d = new Date(now);
+      d.setHours(parsed.hours, parsed.minutes, 0, 0);
+      return d.getTime();
+    };
+
+    return res.status(200).json({
+      data: {
+        userShiftId:    userShift.id,
+        shiftId:        userShift.shiftId,
+        shiftName:      userShift.shift?.shiftName   ?? null,
+        assignedDate:   userShift.assignedDate,
+        scheduledStartMs: toTodayMs(startParsed),   // unix ms — shift start today
+        scheduledEndMs:   toTodayMs(endParsed),     // unix ms — shift end today
+        crossesMidnight:  userShift.shift?.crossesMidnight ?? false,
+      },
+    });
+  } catch (err) {
+    console.error("getTodayShift error:", err);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/timelogs/time-in
+// ─────────────────────────────────────────────────────────────────────────────
 const timeIn = async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Unauthorized" });
@@ -87,8 +168,17 @@ const timeIn = async (req, res) => {
     });
     if (activeLog)
       return res.status(400).json({ message: "User already timed in." });
-    const { localTimestamp, deviceInfo, location } = req.body;
+
+    const { localTimestamp, deviceInfo, location, punchType } = req.body;
+
+    // Validate punchType — fall back to REGULAR for unrecognised values
+    const resolvedPunchType =
+      punchType && VALID_PUNCH_TYPES.includes(punchType)
+        ? punchType
+        : "REGULAR";
+
     const actualTimeIn = localTimestamp ? new Date(localTimestamp) : new Date();
+
     const locCheck = await verifyLocationRestriction(
       userId,
       location?.latitude,
@@ -96,22 +186,26 @@ const timeIn = async (req, res) => {
     );
     if (!locCheck.allowed)
       return res.status(400).json({ message: locCheck.reason });
+
     const lateHours = await calculateLateHoursForUser(userId, actualTimeIn);
+
     const newTimeLog = await prisma.timeLog.create({
       data: {
         userId,
         timeIn: actualTimeIn,
         lateHours,
+        punchType: resolvedPunchType,
         deviceInfo: { start: deviceInfo ?? null, end: null },
-        location: { start: location ?? null, end: null },
+        location:   { start: location   ?? null, end: null },
         coffeeBreaks: [],
-        lunchBreak: null,
+        lunchBreak:   null,
       },
     });
 
     getIO()
       .to(userId)
       .emit("timeLogUpdated", { type: "timeIn", data: newTimeLog });
+
     return res
       .status(201)
       .json({ message: "Time in recorded successfully.", data: newTimeLog });
@@ -121,19 +215,28 @@ const timeIn = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/timelogs/time-out
+//
+// NEW: accepts an optional `punchType` in the request body.
+// If provided (and valid), the TimeLog's punchType is updated at time-out.
+// This is used when a DayCare non-driver employee clocked out 45+ min late
+// and confirmed they covered the PM Driver/Aide slot (DRIVER_AIDE_PM).
+// ─────────────────────────────────────────────────────────────────────────────
 const timeOut = async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Unauthorized" });
     const userId = req.user.id;
+
     const activeLog = await prisma.timeLog.findFirst({
       where: { userId, status: true },
     });
     if (!activeLog)
       return res.status(400).json({ message: "No active time log found." });
-    const { localTimestamp, deviceInfo, location } = req.body;
-    const actualTimeOut = localTimestamp
-      ? new Date(localTimestamp)
-      : new Date();
+
+    const { localTimestamp, deviceInfo, location, punchType } = req.body;
+    const actualTimeOut = localTimestamp ? new Date(localTimestamp) : new Date();
+
     const locCheck = await verifyLocationRestriction(
       userId,
       location?.latitude,
@@ -141,25 +244,37 @@ const timeOut = async (req, res) => {
     );
     if (!locCheck.allowed)
       return res.status(400).json({ message: locCheck.reason });
+
+    // Build the update payload
+    const updateData = {
+      timeOut: actualTimeOut,
+      status:  false,
+      deviceInfo: {
+        start: activeLog.deviceInfo?.start ?? null,
+        end:   deviceInfo ?? null,
+      },
+      location: {
+        start: activeLog.location?.start ?? null,
+        end:   location ?? null,
+      },
+    };
+
+    // Only update punchType if a valid value was explicitly sent.
+    // We only accept DRIVER_AIDE_PM on time-out (the AM variant is set at
+    // time-in). Reject anything else silently by checking the allowlist.
+    if (punchType && VALID_PUNCH_TYPES.includes(punchType)) {
+      updateData.punchType = punchType;
+    }
+
     const updatedTimeLog = await prisma.timeLog.update({
       where: { id: activeLog.id },
-      data: {
-        timeOut: actualTimeOut,
-        status: false,
-        deviceInfo: {
-          start: activeLog.deviceInfo.start ?? null,
-          end: deviceInfo ?? null,
-        },
-        location: {
-          start: activeLog.location.start ?? null,
-          end: location ?? null,
-        },
-      },
+      data:  updateData,
     });
 
     getIO()
       .to(userId)
       .emit("timeLogUpdated", { type: "timeOut", data: updatedTimeLog });
+
     return res.status(200).json({
       message: "Time out recorded successfully.",
       data: updatedTimeLog,
@@ -178,12 +293,30 @@ const getUserTimeLogs = async (req, res) => {
       orderBy: { timeIn: "desc" },
       include: {
         overtime: { orderBy: { createdAt: "desc" } },
+        // TimeLog.approval is one-to-one to TimeLogApproval
+        approval: {
+          select: {
+            id:     true,
+            status: true,        // pending | approved | rejected
+            cutoffPeriod: {
+              select: {
+                id:          true,
+                periodStart: true,
+                periodEnd:   true,
+                status:      true, // open | locked | processed
+              },
+            },
+          },
+        },
       },
     });
     const out = logs.map((l) => ({
       ...l,
-      timeIn: l.timeIn ? l.timeIn.toISOString() : null,
-      timeOut: l.timeOut ? l.timeOut.toISOString() : null,
+      timeIn:          l.timeIn  ? l.timeIn.toISOString()  : null,
+      timeOut:         l.timeOut ? l.timeOut.toISOString() : null,
+      // Flatten: expose the single most recent approval at top level
+      cutoffApproval: l.approval ?? null,
+      approval:       undefined,
     }));
     return res.status(200).json({ message: "Time logs retrieved.", data: out });
   } catch (err) {
@@ -224,24 +357,18 @@ const coffeeBreakStart = async (req, res) => {
       ? activeLog.coffeeBreaks
       : [];
     if (breaks.find((b) => b.end === null))
-      return res
-        .status(400)
-        .json({ message: "A coffee break is already active." });
+      return res.status(400).json({ message: "A coffee break is already active." });
     if (breaks.length >= 2)
-      return res
-        .status(400)
-        .json({ message: "Maximum coffee breaks reached." });
+      return res.status(400).json({ message: "Maximum coffee breaks reached." });
     breaks.push({ start: new Date().toISOString(), end: null });
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
-      data: { coffeeBreaks: breaks },
+      data:  { coffeeBreaks: breaks },
     });
     getIO()
       .to(userId)
       .emit("timeLogUpdated", { type: "coffeeBreakStart", data: updated });
-    return res
-      .status(200)
-      .json({ message: "Coffee break started.", data: updated });
+    return res.status(200).json({ message: "Coffee break started.", data: updated });
   } catch (err) {
     console.error("Coffee break start error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -262,20 +389,16 @@ const coffeeBreakEnd = async (req, res) => {
       : [];
     const i = breaks.findIndex((b) => b.end === null);
     if (i === -1)
-      return res
-        .status(400)
-        .json({ message: "No active coffee break to end." });
+      return res.status(400).json({ message: "No active coffee break to end." });
     breaks[i].end = new Date().toISOString();
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
-      data: { coffeeBreaks: breaks },
+      data:  { coffeeBreaks: breaks },
     });
     getIO()
       .to(userId)
       .emit("timeLogUpdated", { type: "coffeeBreakEnd", data: updated });
-    return res
-      .status(200)
-      .json({ message: "Coffee break ended.", data: updated });
+    return res.status(200).json({ message: "Coffee break ended.", data: updated });
   } catch (err) {
     console.error("Coffee break end error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -295,14 +418,12 @@ const lunchBreakStart = async (req, res) => {
       return res.status(400).json({ message: "Lunch break already started." });
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
-      data: { lunchBreak: { start: new Date().toISOString(), end: null } },
+      data:  { lunchBreak: { start: new Date().toISOString(), end: null } },
     });
     getIO()
       .to(userId)
       .emit("timeLogUpdated", { type: "lunchBreakStart", data: updated });
-    return res
-      .status(200)
-      .json({ message: "Lunch break started.", data: updated });
+    return res.status(200).json({ message: "Lunch break started.", data: updated });
   } catch (err) {
     console.error("Lunch break start error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -332,9 +453,7 @@ const lunchBreakEnd = async (req, res) => {
     getIO()
       .to(userId)
       .emit("timeLogUpdated", { type: "lunchBreakEnd", data: updated });
-    return res
-      .status(200)
-      .json({ message: "Lunch break ended.", data: updated });
+    return res.status(200).json({ message: "Lunch break ended.", data: updated });
   } catch (err) {
     console.error("Lunch break end error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -357,73 +476,74 @@ const getCompanyTimeLogs = async (req, res) => {
       if (req.query.to)
         where.timeIn.lte = new Date(`${req.query.to}T23:59:59Z`);
     }
-    const page = parseInt(req.query.page) > 0 ? parseInt(req.query.page) : 1;
-    const limit =
-      parseInt(req.query.limit) > 0 ? parseInt(req.query.limit) : 20;
-    const skip = (page - 1) * limit;
+    const page  = parseInt(req.query.page)  > 0 ? parseInt(req.query.page)  : 1;
+    const limit = parseInt(req.query.limit) > 0 ? parseInt(req.query.limit) : 20;
+    const skip  = (page - 1) * limit;
     const total = await prisma.timeLog.count({ where });
-    const logs = await prisma.timeLog.findMany({
+    const logs  = await prisma.timeLog.findMany({
       where,
       orderBy: { timeIn: "desc" },
       include: {
         user: { include: { profile: true, department: true, presence: true } },
+        // TimeLog.approval is one-to-one to TimeLogApproval
+        approval: {
+          select: {
+            id:     true,
+            status: true,        // pending | approved | rejected
+            cutoffPeriod: {
+              select: {
+                id:          true,
+                periodStart: true,
+                periodEnd:   true,
+                status:      true, // open | locked | processed
+              },
+            },
+          },
+        },
       },
       skip,
       take: limit,
     });
     const rows = logs.map((l) => ({
-      id: l.id,
-      userId: l.user.id,
-      employeeName: `${l.user.profile?.firstName || ""} ${
-        l.user.profile?.lastName || ""
-      }`.trim(),
-      email: l.user.email,
-      department: l.user.department?.name || "—",
-      timeIn: l.timeIn,
-      timeOut: l.timeOut,
-      lateHours: l.lateHours,
-      deviceIn: l.deviceInfo?.start ?? null,
-      deviceOut: l.deviceInfo?.end ?? null,
-      locIn: l.location?.start ?? null,
-      locOut: l.location?.end ?? null,
-      status: l.status ? "active" : "completed",
-      coffeeBreaks: l.coffeeBreaks ?? [],
-      lunchBreak: l.lunchBreak ?? null,
+      id:          l.id,
+      userId:      l.user.id,
+      employeeName:`${l.user.profile?.firstName || ""} ${l.user.profile?.lastName || ""}`.trim(),
+      email:       l.user.email,
+      department:  l.user.department?.name || "—",
+      timeIn:      l.timeIn,
+      timeOut:     l.timeOut,
+      lateHours:   l.lateHours,
+      punchType:   l.punchType ?? "REGULAR",
+      deviceIn:    l.deviceInfo?.start ?? null,
+      deviceOut:   l.deviceInfo?.end   ?? null,
+      locIn:       l.location?.start   ?? null,
+      locOut:      l.location?.end     ?? null,
+      status:      l.status ? "active" : "completed",
+      coffeeBreaks:l.coffeeBreaks ?? [],
+      lunchBreak:  l.lunchBreak  ?? null,
       coffeeCount: (l.coffeeBreaks ?? []).length,
-      lunchTaken: !!l.lunchBreak?.end,
-      presence: l.user.presence?.presenceStatus || "unknown",
-      shiftToday: null,
+      lunchTaken:  !!l.lunchBreak?.end,
+      presence:    l.user.presence?.presenceStatus || "unknown",
+      shiftToday:  null,
+      // null if not in any cutoff period yet
+      cutoffApproval: l.approval ?? null,
     }));
     if (rows.length) {
-      const userIds = [...new Set(rows.map((r) => r.userId))];
-      const today = new Date();
-      const dayStart = new Date(today);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setHours(23, 59, 59, 999);
+      const userIds  = [...new Set(rows.map((r) => r.userId))];
+      const today    = new Date();
+      const dayStart = new Date(today); dayStart.setHours(0, 0, 0, 0);
+      const dayEnd   = new Date(dayStart); dayEnd.setHours(23, 59, 59, 999);
       const shiftRows = await prisma.userShift.findMany({
-        where: {
-          userId: { in: userIds },
-          assignedDate: { gte: dayStart, lte: dayEnd },
-        },
+        where: { userId: { in: userIds }, assignedDate: { gte: dayStart, lte: dayEnd } },
         include: { shift: true },
       });
       const map = {};
-      shiftRows.forEach((s) => {
-        map[s.userId] = s.shift.shiftName;
-      });
-      rows.forEach((r) => {
-        r.shiftToday = map[r.userId] || "—";
-      });
+      shiftRows.forEach((s) => { map[s.userId] = s.shift.shiftName; });
+      rows.forEach((r) => { r.shiftToday = map[r.userId] || "—"; });
     }
     return res.status(200).json({
       data: rows,
-      meta: {
-        page,
-        perPage: limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      meta: { page, perPage: limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (err) {
     return res.status(500).json({ message: "Internal server error" });
@@ -444,12 +564,10 @@ const updateTimeLogDateTime = async (req, res) => {
     });
     if (!log) return res.status(404).json({ message: "Time log not found." });
     if (req.user.companyId !== log.user.companyId)
-      return res
-        .status(403)
-        .json({ message: "Access denied: different company." });
+      return res.status(403).json({ message: "Access denied: different company." });
 
     const data = {};
-    if (timeIn) data.timeIn = new Date(timeIn);
+    if (timeIn)  data.timeIn  = new Date(timeIn);
     if (timeOut) data.timeOut = new Date(timeOut);
     if (timeIn) {
       const lh = await recalcLateHours(log.userId, timeIn);
@@ -461,9 +579,7 @@ const updateTimeLogDateTime = async (req, res) => {
       .to(log.userId)
       .emit("timeLogUpdated", { type: "manualUpdate", data: updated });
 
-    return res
-      .status(200)
-      .json({ message: "Time log updated.", data: updated });
+    return res.status(200).json({ message: "Time log updated.", data: updated });
   } catch (err) {
     console.error("updateTimeLogDateTime error:", err);
     return res.status(500).json({ message: "Internal server error." });
@@ -473,6 +589,7 @@ const updateTimeLogDateTime = async (req, res) => {
 module.exports = {
   timeIn,
   timeOut,
+  getTodayShift,
   getUserTimeLogs,
   deleteTimeLog,
   coffeeBreakStart,

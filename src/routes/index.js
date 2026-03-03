@@ -13,6 +13,7 @@ const locationRoutes = require("@routes/Features/locationRoutes");
 const payrollRoutes = require("@routes/Features/payrollRoutes");
 const timeLogsRoutes = require("@routes/Features/timeLogRoutes.js");
 const shiftRoutes = require("@routes/Features/shiftRoutes");
+const shiftAssignmentRoutes = require("@routes/Features/shiftAssignmentRoutes");
 const shiftSchedulesRoutes = require("@routes/Features/shiftScheduleRoutes");
 const userShiftRoutes = require("@routes/Features/userShiftRoutes");
 const employeeLocationRestrictionRoutes = require("@routes/Features/employeeLocationRestrictionRoutes");
@@ -34,8 +35,10 @@ const payrollSystemRoutes = require("@routes/PayrollSystem/payrollSystemRoutes")
 const employeePayrollDetailsRoutes = require("@routes/PayrollSystem/employeePayrollDetailsRoutes");
 const cutOffDetailsRoutes = require("@routes/Features/cutoffPeriodRoutes");
 const notificationRoutes = require('./notificationRoutes');
-
 const systemAdminRoutes = require("@routes/Analytics/systemAdminRoutes");
+const cutoffRoutes = require("./Cutoff/cutoffRoutes");
+
+const testRoutes = require("@routes/testRoutes");
 
 router.use("/account", accountRoutes);
 router.use("/company", companyRoutes);
@@ -50,6 +53,7 @@ router.use("/leaves", leavesRoutes);
 router.use("/location", locationRoutes);
 router.use("/payroll", payrollRoutes);
 router.use("/shifts", shiftRoutes);
+router.use("/shift-assignments", shiftAssignmentRoutes);
 router.use("/shiftschedules", shiftSchedulesRoutes);
 router.use("/usershifts", userShiftRoutes);
 router.use("/employee-location-restriction", employeeLocationRestrictionRoutes);
@@ -68,9 +72,11 @@ router.use("/company-information", companyInformationRoutes);
 router.use("/employee-payroll-details", employeePayrollDetailsRoutes);
 router.use("/cutoff-periods", cutOffDetailsRoutes);
 router.use('/notifications', notificationRoutes);
+router.use("/cutoff", cutoffRoutes);
 
 router.use("/analytics", analyticsRoutes);
 router.use("/system-admin", systemAdminRoutes);
+router.use("/test", testRoutes);
 
 router.get("/", (req, res) => {
     res.status(200).json({ message: "Server is up and running!" });
