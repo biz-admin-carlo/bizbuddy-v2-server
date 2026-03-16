@@ -489,8 +489,15 @@ model Company {
   Tax                     Tax[]
   User                    User[]
   gracePeriodMinutes      Int?     @default(15)
+  otBasis               String?  @default("daily")
+  dailyOtThresholdHours Decimal? @default(8.00)  @db.Decimal(5, 2)
+  weeklyOtThresholdHours Decimal? @default(40.00) @db.Decimal(5, 2)
+  cutoffOtThresholdHours Decimal? @default(80.00) @db.Decimal(5, 2)
+
   checkTemplate     String?   @default("default")
   checkPositions    Json?
+
+
 
   clockInGracePeriod       Int       @default(30)  // minutes after scheduled start
   clockOutGracePeriod      Int       @default(30)  // minutes after scheduled end
@@ -742,8 +749,8 @@ model TimeLog {
   originalTimeIn          DateTime?          @db.Timestamptz(6)
   originalTimeOut         DateTime?          @db.Timestamptz(6)
   isApproved              Boolean            @default(false)
-punchType  PunchType  @default(REGULAR)
-
+  punchType  PunchType  @default(REGULAR)
+  remarks Json @default("[]")
   
   contests                ContestTimeLog[]
   overtime                Overtime[]

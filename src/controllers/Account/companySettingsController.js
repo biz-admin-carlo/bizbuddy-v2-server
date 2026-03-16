@@ -10,6 +10,11 @@ exports.getSettings = async (req, res) => {
         name: true,
         defaultShiftHours: true,
         minimumLunchMinutes: true,
+        gracePeriodMinutes: true,
+        otBasis: true,
+        dailyOtThresholdHours: true,
+        weeklyOtThresholdHours: true,
+        cutoffOtThresholdHours: true,
         country: true,
         currency: true,
         language: true,
@@ -42,11 +47,16 @@ exports.updateSettings = async (req, res) => {
       defaultShiftHours,
       minimumLunchMinutes,
       gracePeriodMinutes,
+      dailyOtThresholdHours,
+      weeklyOtThresholdHours,
+      cutoffOtThresholdHours,
       country,
       currency,
       language,
       timeZone,
     } = req.body;
+
+    const VALID_OT_BASES = ["daily", "weekly", "cutoff"];
 
     const updated = await prisma.company.update({
       where: { id: req.user.companyId },
@@ -57,17 +67,29 @@ exports.updateSettings = async (req, res) => {
         }),
         ...(minimumLunchMinutes !== undefined && {
           minimumLunchMinutes:
-            minimumLunchMinutes === null
-              ? null
-              : Number(minimumLunchMinutes) || 0,
+            minimumLunchMinutes === null ? null : Number(minimumLunchMinutes) || 0,
         }),
-        // ✅ NEW: Grace period update logic
         ...(gracePeriodMinutes !== undefined && {
           gracePeriodMinutes:
-            gracePeriodMinutes === null
-              ? 15  // Default to 15 if set to null
-              : Number(gracePeriodMinutes) || 15,
+            gracePeriodMinutes === null ? 15 : Number(gracePeriodMinutes) || 15,
         }),
+        // ── OT configuration ────────────────────────
+        ...(otBasis !== undefined && {
+          otBasis: VALID_OT_BASES.includes(otBasis) ? otBasis : "daily",
+        }),
+        ...(dailyOtThresholdHours !== undefined && {
+          dailyOtThresholdHours:
+            dailyOtThresholdHours === null ? 8 : Number(dailyOtThresholdHours) || 8,
+        }),
+        ...(weeklyOtThresholdHours !== undefined && {
+          weeklyOtThresholdHours:
+            weeklyOtThresholdHours === null ? 40 : Number(weeklyOtThresholdHours) || 40,
+        }),
+        ...(cutoffOtThresholdHours !== undefined && {
+          cutoffOtThresholdHours:
+            cutoffOtThresholdHours === null ? 80 : Number(cutoffOtThresholdHours) || 80,
+        }),
+        // ─────────────────────────────────────────────
         ...(timeZone !== undefined && { timeZone }),
         country,
         currency,
@@ -77,7 +99,11 @@ exports.updateSettings = async (req, res) => {
         id: true,
         defaultShiftHours: true,
         minimumLunchMinutes: true,
-        gracePeriodMinutes: true,  
+        gracePeriodMinutes: true,
+        otBasis: true,
+        dailyOtThresholdHours: true,
+        weeklyOtThresholdHours: true,
+        cutoffOtThresholdHours: true,
         country: true,
         currency: true,
         language: true,

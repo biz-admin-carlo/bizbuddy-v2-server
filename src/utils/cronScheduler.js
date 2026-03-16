@@ -4,7 +4,7 @@ const checkMissedClockIns = require('../jobs/checkMissedClockIns');
 const checkMissedClockOuts = require('../jobs/checkMissedClockOuts');
 const sendMorningReportJob = require('../jobs/sendMorningReport');
 const sendEveningReportJob = require('../jobs/sendEveningReport');
-const autoClockOut13Hours = require('../jobs/autoClockOut13Hours');
+const autoClockOutSafeguard = require('../jobs/autoClockOutSafeguard');
 
 /**
  * Initialize all cron jobs for the notification system
@@ -26,9 +26,9 @@ function initializeCronJobs() {
   });
   console.log('✅ Missed clock-out checker: Every 5 minutes');
 
-  // Job 3: Auto clock-out after 13 hours - every 10 minutes
+  // Job 3: Auto clock-out after 20 hours - every 10 minutes
   cron.schedule('*/10 * * * *', async () => {
-    await autoClockOut13Hours();
+    await autoClockOutSafeguard();
   });
   console.log('✅ Auto 13-hour clock-out: Every 10 minutes');
 
