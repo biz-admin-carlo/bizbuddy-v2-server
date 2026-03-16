@@ -525,6 +525,9 @@ const getCompanyTimeLogs = async (req, res) => {
       lunchTaken:  !!l.lunchBreak?.end,
       presence:    l.user.presence?.presenceStatus || "unknown",
       shiftToday:  null,
+      autoClockOut:   l.autoClockOut   ?? false,  // ← ADD THIS
+      autoClockOutAt: l.autoClockOutAt ?? null,   // ← ADD THIS
+      cutoffApproval: l.approval ?? null,
       // null if not in any cutoff period yet
       cutoffApproval: l.approval ?? null,
     }));
