@@ -1,30 +1,52 @@
 // src/routes/Features/cutoffPeriodRoutes.js
+// ✅ CONSOLIDATED — Single source of truth for all cutoff period operations
+// ⚠️  DEPRECATED: cutoffApprovalsController.js is no longer used
+//     The /api/cutoff/ approval routes have been removed from cutoffRoutes.js
+//     All approval operations now live here under /api/cutoff-periods/
 
 const express = require("express");
 const router = express.Router();
 const { authorizeRoles } = require("@middlewares/roleMiddleware");
 const authenticate = require("@middlewares/authMiddleware");
+
 const {
   createCutoffPeriod,
   getCutoffPeriods,
   getCutoffPeriodById,
   updateCutoffStatus,
+  finalizeCutoffPeriod,
   deleteCutoffPeriod,
   getCutoffApprovals,
   getPendingApprovals,
+  syncCutoffApprovals,
   bulkUpdateApprovals,
   updateSingleApproval,
+  resolveConflict,
   getCutoffSummary,
 } = require("@controllers/Features/cutoffPeriodController");
 
-// Cutoff Period Management
+// ============================================================================
+// CUTOFF PERIOD CRUD
+// ============================================================================
+
+/**
+ * @route   POST /api/cutoff-periods/create
+ * @desc    Create a manual cutoff period
+ * @access  Admin, Superadmin
+ * NOTE: Must be defined BEFORE /:id to prevent "create" being matched as an id
+ */
 router.post(
   "/create",
   authenticate,
-  authorizeRoles("admin", "supervisor", "superadmin"),
+  authorizeRoles("admin", "superadmin"),
   createCutoffPeriod
 );
 
+/**
+ * @route   GET /api/cutoff-periods
+ * @desc    Get all cutoff periods (with optional ?departmentId & ?status filters)
+ * @access  Admin, Supervisor, Superadmin
+ */
 router.get(
   "/",
   authenticate,
@@ -32,35 +54,33 @@ router.get(
   getCutoffPeriods
 );
 
-router.get(
-  "/:id",
-  authenticate,
-  authorizeRoles("admin", "supervisor", "superadmin"),
-  getCutoffPeriodById
-);
+// ============================================================================
+// APPROVAL ROUTES
+// ⚠️  ORDERING IS CRITICAL — specific paths must come before dynamic /:id paths
+//     Express matches top-to-bottom. If /:id is defined first, "pending" and
+//     "bulk" would be treated as approvalIds and hit the wrong handler.
+// ============================================================================
 
-router.patch(
-  "/:id/status",
+/**
+ * @route   POST /api/cutoff-periods/:id/sync
+ * @desc    Sync approval records — creates any missing TimeLogApproval rows
+ *          for time logs that fall within the cutoff period.
+ *          Safe to call multiple times. Only works on open cutoffs.
+ * @access  Admin, Superadmin
+ */
+router.post(
+  "/:id/sync",
   authenticate,
   authorizeRoles("admin", "superadmin"),
-  updateCutoffStatus
+  syncCutoffApprovals
 );
 
-router.delete(
-  "/:id",
-  authenticate,
-  authorizeRoles("admin", "superadmin"),
-  deleteCutoffPeriod
-);
-
-// Time Log Approvals
-router.get(
-  "/:id/approvals",
-  authenticate,
-  authorizeRoles("admin", "supervisor", "superadmin"),
-  getCutoffApprovals
-);
-
+/**
+ * @route   GET /api/cutoff-periods/:id/approvals/pending
+ * @desc    Get pending approvals for a cutoff period (with schedule + break calculations)
+ * @access  Admin, Supervisor, Superadmin
+ * NOTE: Must be before /:id/approvals/:approvalId
+ */
 router.get(
   "/:id/approvals/pending",
   authenticate,
@@ -68,6 +88,13 @@ router.get(
   getPendingApprovals
 );
 
+/**
+ * @route   PATCH /api/cutoff-periods/:id/approvals/bulk
+ * @desc    Bulk approve or exclude multiple time logs
+ * @body    { timeLogIds: string[], action: 'approve' | 'exclude', notes?: string }
+ * @access  Admin, Supervisor, Superadmin
+ * NOTE: Must be before /:id/approvals/:approvalId
+ */
 router.patch(
   "/:id/approvals/bulk",
   authenticate,
@@ -75,6 +102,26 @@ router.patch(
   bulkUpdateApprovals
 );
 
+/**
+ * @route   PATCH /api/cutoff-periods/:id/approvals/:approvalId/conflict
+ * @desc    Resolve a punch vs leave conflict for a single approval
+ * @body    { choice: 'punch' | 'leave' }
+ * @access  Admin, Supervisor, Superadmin
+ * NOTE: Must be before /:id/approvals/:approvalId
+ */
+router.patch(
+  "/:id/approvals/:approvalId/conflict",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  resolveConflict
+);
+
+/**
+ * @route   PATCH /api/cutoff-periods/:id/approvals/:approvalId
+ * @desc    Approve, exclude, or reject a single time log
+ * @body    { action: 'approve' | 'exclude' | 'reject', notes?: string, reason?: string, withOT?: boolean }
+ * @access  Admin, Supervisor, Superadmin
+ */
 router.patch(
   "/:id/approvals/:approvalId",
   authenticate,
@@ -82,12 +129,85 @@ router.patch(
   updateSingleApproval
 );
 
-// Summary/Reports
+/**
+ * @route   GET /api/cutoff-periods/:id/approvals
+ * @desc    Get all approvals for a cutoff period (filterable by ?status=)
+ * @access  Admin, Supervisor, Superadmin
+ */
+router.get(
+  "/:id/approvals",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  getCutoffApprovals
+);
+
+// ============================================================================
+// SINGLE PERIOD ROUTES
+// These all start with /:id — ordering here matters less but kept logical
+// ============================================================================
+
+/**
+ * @route   GET /api/cutoff-periods/:id/summary
+ * @desc    Get payroll summary for a cutoff period
+ * @access  Admin, Supervisor, Superadmin
+ */
 router.get(
   "/:id/summary",
   authenticate,
   authorizeRoles("admin", "supervisor", "superadmin"),
   getCutoffSummary
+);
+
+/**
+ * @route   PATCH /api/cutoff-periods/:id/status
+ * @desc    Update cutoff status: open → locked → processed
+ * @body    { status: 'open' | 'locked' | 'processed' }
+ * @access  Admin, Superadmin
+ */
+router.patch(
+  "/:id/status",
+  authenticate,
+  authorizeRoles("admin", "superadmin"),
+  updateCutoffStatus
+);
+
+/**
+ * @route   POST /api/cutoff-periods/:id/finalize
+ * @desc    Finalize and lock a cutoff period — non-reversible
+ *          Validates all records are approved or excluded before locking.
+ *          Treats legacy 'rejected' records as excluded for backward compat.
+ * @access  Admin, Superadmin
+ */
+router.post(
+  "/:id/finalize",
+  authenticate,
+  authorizeRoles("admin", "superadmin"),
+  finalizeCutoffPeriod
+);
+
+/**
+ * @route   DELETE /api/cutoff-periods/:id
+ * @desc    Delete a cutoff period (only if not processed)
+ * @access  Admin, Superadmin
+ */
+router.delete(
+  "/:id",
+  authenticate,
+  authorizeRoles("admin", "superadmin"),
+  deleteCutoffPeriod
+);
+
+/**
+ * @route   GET /api/cutoff-periods/:id
+ * @desc    Get a single cutoff period with full approval details
+ * @access  Admin, Supervisor, Superadmin
+ * NOTE: Must be LAST among /:id routes — acts as catch-all for GET /:id
+ */
+router.get(
+  "/:id",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  getCutoffPeriodById
 );
 
 module.exports = router;
