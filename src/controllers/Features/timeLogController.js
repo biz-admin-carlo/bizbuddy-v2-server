@@ -78,8 +78,6 @@ async function calculateLateHoursForUser(userId, punchInDate) {
 }
 
 // Valid punch types — mirrors the PunchType enum in the Prisma schema
-// DRIVER_AIDE_AM : non-driver clocked in 45+ min before scheduled start
-// DRIVER_AIDE_PM : non-driver clocked out 45+ min after scheduled end
 const VALID_PUNCH_TYPES = [
   "REGULAR",
   "DRIVER_AIDE",
@@ -89,11 +87,6 @@ const VALID_PUNCH_TYPES = [
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/timelogs/today-shift
-// Returns the employee's UserShift for today (if any), including the parent
-// Shift template so the frontend can read startTime and endTime.
-// Used by Punch.jsx on mount to:
-//   1. Show a "no schedule today" reminder for all companies
-//   2. Compute the 45-min early/late thresholds for DayCare non-driver employees
 // ─────────────────────────────────────────────────────────────────────────────
 const getTodayShift = async (req, res) => {
   try {
@@ -118,8 +111,6 @@ const getTodayShift = async (req, res) => {
       return res.status(200).json({ data: null });
     }
 
-    // Extract HH:MM from the epoch-anchor ISO timestamps stored on the Shift
-    // e.g. "1970-01-01T08:00:00.000Z" → { hours: 8, minutes: 0 }
     const parseShiftTime = (isoString) => {
       if (!isoString) return null;
       const d = new Date(isoString);
@@ -129,8 +120,6 @@ const getTodayShift = async (req, res) => {
     const startParsed = parseShiftTime(userShift.shift?.startTime);
     const endParsed   = parseShiftTime(userShift.shift?.endTime);
 
-    // Build today's actual wall-clock DateTime for the shift boundaries
-    // so the frontend can compare directly with Date.now()
     const toTodayMs = (parsed) => {
       if (!parsed) return null;
       const d = new Date(now);
@@ -140,12 +129,12 @@ const getTodayShift = async (req, res) => {
 
     return res.status(200).json({
       data: {
-        userShiftId:    userShift.id,
-        shiftId:        userShift.shiftId,
-        shiftName:      userShift.shift?.shiftName   ?? null,
-        assignedDate:   userShift.assignedDate,
-        scheduledStartMs: toTodayMs(startParsed),   // unix ms — shift start today
-        scheduledEndMs:   toTodayMs(endParsed),     // unix ms — shift end today
+        userShiftId:      userShift.id,
+        shiftId:          userShift.shiftId,
+        shiftName:        userShift.shift?.shiftName   ?? null,
+        assignedDate:     userShift.assignedDate,
+        scheduledStartMs: toTodayMs(startParsed),
+        scheduledEndMs:   toTodayMs(endParsed),
         crossesMidnight:  userShift.shift?.crossesMidnight ?? false,
       },
     });
@@ -169,13 +158,24 @@ const timeIn = async (req, res) => {
     if (activeLog)
       return res.status(400).json({ message: "User already timed in." });
 
-    const { localTimestamp, deviceInfo, location, punchType } = req.body;
+    // ✅ FIX: destructure `remarks` from request body
+    const { localTimestamp, deviceInfo, location, punchType, remarks } = req.body;
 
-    // Validate punchType — fall back to REGULAR for unrecognised values
+    // Validate punchType
     const resolvedPunchType =
-      punchType && VALID_PUNCH_TYPES.includes(punchType)
-        ? punchType
-        : "REGULAR";
+      punchType && VALID_PUNCH_TYPES.includes(punchType) ? punchType : "REGULAR";
+
+    // ✅ Validate remarks — must be an array of objects with type + message
+    // Sanitize to prevent storing arbitrary data
+    const resolvedRemarks = Array.isArray(remarks)
+      ? remarks
+          .filter((r) => r && typeof r.type === "string" && typeof r.message === "string")
+          .map((r) => ({
+            type:      r.type.slice(0, 50),       // cap field lengths
+            message:   r.message.slice(0, 500),
+            timestamp: r.timestamp || new Date().toISOString(),
+          }))
+      : [];
 
     const actualTimeIn = localTimestamp ? new Date(localTimestamp) : new Date();
 
@@ -192,9 +192,11 @@ const timeIn = async (req, res) => {
     const newTimeLog = await prisma.timeLog.create({
       data: {
         userId,
-        timeIn: actualTimeIn,
+        timeIn:    actualTimeIn,
         lateHours,
         punchType: resolvedPunchType,
+        // ✅ FIX: save remarks — stores [{type, message, timestamp}] or []
+        remarks:   resolvedRemarks,
         deviceInfo: { start: deviceInfo ?? null, end: null },
         location:   { start: location   ?? null, end: null },
         coffeeBreaks: [],
@@ -217,11 +219,6 @@ const timeIn = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/timelogs/time-out
-//
-// NEW: accepts an optional `punchType` in the request body.
-// If provided (and valid), the TimeLog's punchType is updated at time-out.
-// This is used when a DayCare non-driver employee clocked out 45+ min late
-// and confirmed they covered the PM Driver/Aide slot (DRIVER_AIDE_PM).
 // ─────────────────────────────────────────────────────────────────────────────
 const timeOut = async (req, res) => {
   try {
@@ -245,7 +242,6 @@ const timeOut = async (req, res) => {
     if (!locCheck.allowed)
       return res.status(400).json({ message: locCheck.reason });
 
-    // Build the update payload
     const updateData = {
       timeOut: actualTimeOut,
       status:  false,
@@ -259,9 +255,6 @@ const timeOut = async (req, res) => {
       },
     };
 
-    // Only update punchType if a valid value was explicitly sent.
-    // We only accept DRIVER_AIDE_PM on time-out (the AM variant is set at
-    // time-in). Reject anything else silently by checking the allowlist.
     if (punchType && VALID_PUNCH_TYPES.includes(punchType)) {
       updateData.punchType = punchType;
     }
@@ -293,17 +286,16 @@ const getUserTimeLogs = async (req, res) => {
       orderBy: { timeIn: "desc" },
       include: {
         overtime: { orderBy: { createdAt: "desc" } },
-        // TimeLog.approval is one-to-one to TimeLogApproval
         approval: {
           select: {
             id:     true,
-            status: true,        // pending | approved | rejected
+            status: true,
             cutoffPeriod: {
               select: {
                 id:          true,
                 periodStart: true,
                 periodEnd:   true,
-                status:      true, // open | locked | processed
+                status:      true,
               },
             },
           },
@@ -312,9 +304,8 @@ const getUserTimeLogs = async (req, res) => {
     });
     const out = logs.map((l) => ({
       ...l,
-      timeIn:          l.timeIn  ? l.timeIn.toISOString()  : null,
-      timeOut:         l.timeOut ? l.timeOut.toISOString() : null,
-      // Flatten: expose the single most recent approval at top level
+      timeIn:         l.timeIn  ? l.timeIn.toISOString()  : null,
+      timeOut:        l.timeOut ? l.timeOut.toISOString() : null,
       cutoffApproval: l.approval ?? null,
       approval:       undefined,
     }));
@@ -353,9 +344,7 @@ const coffeeBreakStart = async (req, res) => {
     });
     if (!activeLog)
       return res.status(400).json({ message: "No active time log found." });
-    let breaks = Array.isArray(activeLog.coffeeBreaks)
-      ? activeLog.coffeeBreaks
-      : [];
+    let breaks = Array.isArray(activeLog.coffeeBreaks) ? activeLog.coffeeBreaks : [];
     if (breaks.find((b) => b.end === null))
       return res.status(400).json({ message: "A coffee break is already active." });
     if (breaks.length >= 2)
@@ -365,9 +354,7 @@ const coffeeBreakStart = async (req, res) => {
       where: { id: activeLog.id },
       data:  { coffeeBreaks: breaks },
     });
-    getIO()
-      .to(userId)
-      .emit("timeLogUpdated", { type: "coffeeBreakStart", data: updated });
+    getIO().to(userId).emit("timeLogUpdated", { type: "coffeeBreakStart", data: updated });
     return res.status(200).json({ message: "Coffee break started.", data: updated });
   } catch (err) {
     console.error("Coffee break start error:", err);
@@ -384,9 +371,7 @@ const coffeeBreakEnd = async (req, res) => {
     });
     if (!activeLog)
       return res.status(400).json({ message: "No active time log found." });
-    let breaks = Array.isArray(activeLog.coffeeBreaks)
-      ? activeLog.coffeeBreaks
-      : [];
+    let breaks = Array.isArray(activeLog.coffeeBreaks) ? activeLog.coffeeBreaks : [];
     const i = breaks.findIndex((b) => b.end === null);
     if (i === -1)
       return res.status(400).json({ message: "No active coffee break to end." });
@@ -395,9 +380,7 @@ const coffeeBreakEnd = async (req, res) => {
       where: { id: activeLog.id },
       data:  { coffeeBreaks: breaks },
     });
-    getIO()
-      .to(userId)
-      .emit("timeLogUpdated", { type: "coffeeBreakEnd", data: updated });
+    getIO().to(userId).emit("timeLogUpdated", { type: "coffeeBreakEnd", data: updated });
     return res.status(200).json({ message: "Coffee break ended.", data: updated });
   } catch (err) {
     console.error("Coffee break end error:", err);
@@ -420,9 +403,7 @@ const lunchBreakStart = async (req, res) => {
       where: { id: activeLog.id },
       data:  { lunchBreak: { start: new Date().toISOString(), end: null } },
     });
-    getIO()
-      .to(userId)
-      .emit("timeLogUpdated", { type: "lunchBreakStart", data: updated });
+    getIO().to(userId).emit("timeLogUpdated", { type: "lunchBreakStart", data: updated });
     return res.status(200).json({ message: "Lunch break started.", data: updated });
   } catch (err) {
     console.error("Lunch break start error:", err);
@@ -444,15 +425,10 @@ const lunchBreakEnd = async (req, res) => {
     const updated = await prisma.timeLog.update({
       where: { id: activeLog.id },
       data: {
-        lunchBreak: {
-          ...activeLog.lunchBreak,
-          end: new Date().toISOString(),
-        },
+        lunchBreak: { ...activeLog.lunchBreak, end: new Date().toISOString() },
       },
     });
-    getIO()
-      .to(userId)
-      .emit("timeLogUpdated", { type: "lunchBreakEnd", data: updated });
+    getIO().to(userId).emit("timeLogUpdated", { type: "lunchBreakEnd", data: updated });
     return res.status(200).json({ message: "Lunch break ended.", data: updated });
   } catch (err) {
     console.error("Lunch break end error:", err);
@@ -471,10 +447,8 @@ const getCompanyTimeLogs = async (req, res) => {
     if (req.query.status === "completed") where.status = false;
     if (req.query.from || req.query.to) {
       where.timeIn = {};
-      if (req.query.from)
-        where.timeIn.gte = new Date(`${req.query.from}T00:00:00Z`);
-      if (req.query.to)
-        where.timeIn.lte = new Date(`${req.query.to}T23:59:59Z`);
+      if (req.query.from) where.timeIn.gte = new Date(`${req.query.from}T00:00:00Z`);
+      if (req.query.to)   where.timeIn.lte = new Date(`${req.query.to}T23:59:59Z`);
     }
     const page  = parseInt(req.query.page)  > 0 ? parseInt(req.query.page)  : 1;
     const limit = parseInt(req.query.limit) > 0 ? parseInt(req.query.limit) : 20;
@@ -485,17 +459,16 @@ const getCompanyTimeLogs = async (req, res) => {
       orderBy: { timeIn: "desc" },
       include: {
         user: { include: { profile: true, department: true, presence: true } },
-        // TimeLog.approval is one-to-one to TimeLogApproval
         approval: {
           select: {
             id:     true,
-            status: true,        // pending | approved | rejected
+            status: true,
             cutoffPeriod: {
               select: {
                 id:          true,
                 periodStart: true,
                 periodEnd:   true,
-                status:      true, // open | locked | processed
+                status:      true,
               },
             },
           },
@@ -525,10 +498,9 @@ const getCompanyTimeLogs = async (req, res) => {
       lunchTaken:  !!l.lunchBreak?.end,
       presence:    l.user.presence?.presenceStatus || "unknown",
       shiftToday:  null,
-      autoClockOut:   l.autoClockOut   ?? false,  // ← ADD THIS
-      autoClockOutAt: l.autoClockOutAt ?? null,   // ← ADD THIS
-      cutoffApproval: l.approval ?? null,
-      // null if not in any cutoff period yet
+      autoClockOut:   l.autoClockOut   ?? false,
+      autoClockOutAt: l.autoClockOutAt ?? null,
+      remarks:     l.remarks ?? [],   // ✅ expose remarks in company view
       cutoffApproval: l.approval ?? null,
     }));
     if (rows.length) {
