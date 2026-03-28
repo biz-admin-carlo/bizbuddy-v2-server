@@ -36,7 +36,9 @@ router.put("/profile", authenticate, updateProfile);
 router.put("/change-password", authenticate, changePassword);
 router.get("/device-token", getDeviceToken);
 router.post("/device-token", updateDeviceToken);
-router.get("/sign-in", signIn);
+router.get("/sign-in", signIn);   // legacy — kept for backwards compatibility
+router.post("/sign-in", signIn);  // legacy — kept for backwards compatibility
+router.post("/login", signIn);    // new — use this going forward
 router.post("/sign-out", signOut);
 router.get("/plans", getAllSubscriptionPlans);
 router.get("/check-company-name", checkCompanyName);

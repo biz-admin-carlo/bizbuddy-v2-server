@@ -265,21 +265,23 @@ const createShiftSchedule = async (req, res) => {
     await prisma.userShift.createMany({ data: userShiftData });
 
     // Notifications
-    await notifyManagementScheduleCreated(companyId, {
-      shiftName: shift.shiftName,
-      daysOfWeek: normalizedDays,
-      assignmentType,
+    await notifyManagementScheduleCreated({
+      companyId,
+      shift,
+      schedule,
       targetCount: targetUsers.length,
       totalShifts: userShiftData.length,
+      assignedBy: req.user.id,
     });
 
     for (const user of targetUsers) {
-      await notifyEmployeeScheduleCreated(user.id, {
-        shiftName: shift.shiftName,
-        daysOfWeek: normalizedDays,
-        startDate,
-        endDate,
-        totalDays: scheduleDates.length,
+      await notifyEmployeeScheduleCreated({
+        user,
+        shift,
+        schedule,
+        assignedBy: req.user.id,
+        companyId,
+        totalDates: scheduleDates.length,
       });
     }
 

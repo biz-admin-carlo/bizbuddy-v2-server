@@ -331,10 +331,10 @@ const getCompanyScheduleStats = async (req, res) => {
       message: "Company schedule stats retrieved successfully.",
       data: {
         totalEmployees,
-        employeesWithShifts: employeesWithShiftsCount,
-        employeesWithoutShifts: employeesWithoutShiftsCount,
+        withShifts: employeesWithShiftsCount,
+        withoutShifts: employeesWithoutShiftsCount,
         totalShiftsThisMonth,
-        coverageRate: `${coverageRate}%`,
+        coverage: parseFloat(coverageRate),
         month: monthStart.toISOString(),
       }
     });

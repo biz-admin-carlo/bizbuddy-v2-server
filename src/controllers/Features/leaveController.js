@@ -3,6 +3,7 @@
 
 const { prisma } = require("@config/connection");
 const { calcRequestedHours } = require("@utils/leaveUtils");
+const { createNotification } = require("@services/notificationService");
 
 const _format = (l) => ({
   ...l,
@@ -57,6 +58,38 @@ const submitLeaveRequest = async (req, res) => {
       leaveReason,
     },
   });
+
+  // Notify all management users in the company
+  try {
+    const employee = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { profile: { select: { firstName: true, lastName: true } } },
+    });
+    const employeeName = employee?.profile
+      ? `${employee.profile.firstName || ''} ${employee.profile.lastName || ''}`.trim()
+      : req.user.email;
+    const startDateStr = new Date(fromDate).toLocaleDateString();
+    const endDateStr = new Date(toDate).toLocaleDateString();
+
+    const managementUsers = await prisma.user.findMany({
+      where: { companyId: req.user.companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+      select: { id: true, departmentId: true },
+    });
+    await Promise.all(managementUsers.map(manager =>
+      createNotification({
+        userId: manager.id,
+        companyId: req.user.companyId,
+        departmentId: manager.departmentId,
+        notificationCode: 'LEAVE_REQUEST_SUBMITTED',
+        title: 'Leave Request Submitted',
+        message: `${employeeName} submitted a leave request (${type}) from ${startDateStr} to ${endDateStr}.`,
+        payload: { leaveId: data.id, leaveType: type, startDate: fromDate, endDate: toDate, requesterId: req.user.id },
+      })
+    ));
+  } catch (notifError) {
+    console.error('❌ Failed to send leave submission notification:', notifError);
+  }
+
   res.status(201).json({ data });
 };
 
@@ -260,6 +293,27 @@ const approveLeave = async (req, res) => {
 
   console.log(`Leave approved: ${leaveId}`);
 
+  // Notify the requesting employee
+  try {
+    const leaveUser = await prisma.user.findUnique({
+      where: { id: leave.userId },
+      select: { departmentId: true },
+    });
+    const startDateStr = new Date(leave.startDate).toLocaleDateString();
+    const endDateStr = new Date(leave.endDate).toLocaleDateString();
+    await createNotification({
+      userId: leave.userId,
+      companyId: req.user.companyId,
+      departmentId: leaveUser?.departmentId || null,
+      notificationCode: 'LEAVE_REQUEST_APPROVED',
+      title: 'Leave Request Approved',
+      message: `Your leave request from ${startDateStr} to ${endDateStr} has been approved.`,
+      payload: { leaveId, startDate: leave.startDate, endDate: leave.endDate },
+    });
+  } catch (notifError) {
+    console.error('❌ Failed to send leave approval notification:', notifError);
+  }
+
   res.json({ data: _format(data) });
 };
 
@@ -277,6 +331,28 @@ const rejectLeave = async (req, res) => {
     where: { id: leaveId },
     data: { status: "rejected", approverComments },
   });
+
+  // Notify the requesting employee
+  try {
+    const leaveUser = await prisma.user.findUnique({
+      where: { id: leave.userId },
+      select: { departmentId: true },
+    });
+    const startDateStr = new Date(leave.startDate).toLocaleDateString();
+    const endDateStr = new Date(leave.endDate).toLocaleDateString();
+    await createNotification({
+      userId: leave.userId,
+      companyId: req.user.companyId,
+      departmentId: leaveUser?.departmentId || null,
+      notificationCode: 'LEAVE_REQUEST_REJECTED',
+      title: 'Leave Request Rejected',
+      message: `Your leave request from ${startDateStr} to ${endDateStr} has been rejected.`,
+      payload: { leaveId, startDate: leave.startDate, endDate: leave.endDate },
+    });
+  } catch (notifError) {
+    console.error('❌ Failed to send leave rejection notification:', notifError);
+  }
+
   res.json({ data: _format(data) });
 };
 
@@ -318,6 +394,9 @@ const deleteLeave = async (req, res) => {
 // FIXED: Manually fetch leave policy names
 const getLeavesForApprover = async (req, res) => {
   const { status } = req.query;
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const offset = parseInt(req.query.offset) || 0;
+
   if (
     status &&
     !["pending", "approved", "rejected"].includes(status.toLowerCase())
@@ -325,22 +404,27 @@ const getLeavesForApprover = async (req, res) => {
     return res.status(400).json({ message: "Invalid status filter." });
   const where = { approverId: req.user.id };
   if (status) where.status = status.toLowerCase();
-  
-  const leaves = await prisma.leave.findMany({
-    where,
-    include: {
-      User: {
-        select: {
-          id: true,
-          email: true,
-          username: true,
-          role: true,
-          profile: { select: { firstName: true, lastName: true } },
+
+  const [leaves, total] = await Promise.all([
+    prisma.leave.findMany({
+      where,
+      include: {
+        User: {
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            role: true,
+            profile: { select: { firstName: true, lastName: true } },
+          },
         },
       },
-    },
-    orderBy: { startDate: "desc" },
-  });
+      orderBy: { startDate: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.leave.count({ where }),
+  ]);
 
   // Fetch all unique leave policy IDs
   const policyIds = [...new Set(leaves.map(l => l.leaveType).filter(Boolean))];
@@ -369,7 +453,7 @@ const getLeavesForApprover = async (req, res) => {
         }
       : null,
   }));
-  res.json({ data });
+  res.json({ data, pagination: { total, limit, offset, hasMore: offset + limit < total } });
 };
 
 const getBalance = async (req, res) => {

@@ -4,6 +4,7 @@ const express = require("express");
 const router = express.Router();
 const verifySystemAdmin = require("@middlewares/systemAdminAuth");
 const analyticsController = require("@controllers/Analytics/analyticsController");
+const { provisionCompany } = require("@controllers/Superadmin/provisionController");
 
 // Auth routes (no middleware required)
 const authRoutes = require("@routes/Analytics/systemAdminAuthRoutes");
@@ -19,5 +20,8 @@ router.get("/trends", verifySystemAdmin, analyticsController.getTrends);
 router.get("/security", verifySystemAdmin, analyticsController.getSecurityAlerts);
 router.get("/requests", verifySystemAdmin, analyticsController.getRequestLogs);
 router.get("/logger-health", verifySystemAdmin, analyticsController.getLoggerHealth);
+
+// Internal provisioning — Postman only
+router.post("/provision-company", verifySystemAdmin, provisionCompany);
 
 module.exports = router;

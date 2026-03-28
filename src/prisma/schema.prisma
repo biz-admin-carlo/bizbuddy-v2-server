@@ -358,6 +358,7 @@ model User {
   employeeId               String?
   hireDate                 DateTime?                @db.Timestamptz(6)
   deviceToken              String?
+  lastLoginAt              DateTime?                @db.Timestamptz(6)
   reviewedDeletionRequests AccountDeletionRequest[] @relation("DeletionReviewer")
   deletionRequests         AccountDeletionRequest[] @relation("DeletionRequester")
   AttendanceSummary        AttendanceSummary[]
@@ -395,6 +396,10 @@ model User {
   tokenVersion  Int  @default(0)
 
   @@unique([companyId, email])
+  @@index([companyId, status])
+  @@index([companyId, role])
+  @@index([companyId, role, status])
+  @@index([lastLoginAt])
 }
 
 model UserProfile {
@@ -536,8 +541,11 @@ model Department {
   overtimes               Overtime[]
   users                   User[]                   @relation("DepartmentUsers")
   requestLogs             RequestLog[]
-  cutoffPeriods           CutoffPeriod[]           // ✅ ADD THIS
-  cutoffSettings          DepartmentCutoffSettings? // ✅ ADD THIS
+  cutoffPeriods           CutoffPeriod[]
+  cutoffSettings          DepartmentCutoffSettings?
+
+  @@index([companyId])
+  @@index([companyId, supervisorId])
 }
 
 model UserRate {
@@ -764,6 +772,8 @@ model TimeLog {
   @@index([isApproved])
   @@index([timeIn, isApproved])
   @@index([userId, isApproved])
+  @@index([userId, timeIn])
+  @@index([userId, timeOut])
 }
 
 model CutoffPeriod {
@@ -912,6 +922,10 @@ model Leave {
   updatedAt        DateTime @default(now()) @updatedAt @db.Timestamptz(6)
   approver         User?    @relation("approver", fields: [approverId], references: [id])
   User             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([approverId, status])
+  @@index([status, startDate])
 }
 
 model Overtime {
@@ -937,6 +951,8 @@ model Overtime {
   @@index([timeLogId])
   @@index([companyId])
   @@index([departmentId])
+  @@index([requesterId, status])
+  @@index([approverId, status])
 }
 
 model SubscriptionPlan {
@@ -1022,15 +1038,48 @@ model RequestLog {
 
 
 enum NotificationCode {
+  // Legacy (kept for backwards compatibility)
   NOTIF001
   NOTIF002
   NOTIF003
-  MISSED_CLOCK_IN        
-  MISSED_CLOCK_OUT         
-  DAILY_CLOCK_IN_REPORT    
-  DAILY_CLOCK_OUT_REPORT 
+
+  // Attendance
+  MISSED_CLOCK_IN
+  MISSED_CLOCK_OUT
+  DAILY_CLOCK_IN_REPORT
+  DAILY_CLOCK_OUT_REPORT
   AUTO_CLOCK_OUT
+
+  // Schedule
+  SCHEDULE_ASSIGNED
+  SCHEDULE_UPDATED
+  SCHEDULE_ASSIGNED_MANAGEMENT
+  SCHEDULE_REPLACED
+
+  // Leave
+  LEAVE_REQUEST_SUBMITTED
+  LEAVE_REQUEST_APPROVED
+  LEAVE_REQUEST_REJECTED
+
+  // Overtime
+  OVERTIME_REQUEST_SUBMITTED
+  OVERTIME_REQUEST_APPROVED
+  OVERTIME_REQUEST_REJECTED
+
+  // Contest / Punch Log
+  CONTEST_REQUEST_SUBMITTED
+  CONTEST_REQUEST_APPROVED
+  CONTEST_REQUEST_REJECTED
+
+  // Payslip & Cutoff
+  PAYSLIP_GENERATED
+  CUTOFF_PERIOD_LOCKED
+  CUTOFF_PROCESSED
+
+  // Account
   PASSWORD_RESET_SUCCESS
+  DELETION_REQUEST_SUBMITTED
+  WELCOME_EMAIL
 }
 
 enum userStatus {

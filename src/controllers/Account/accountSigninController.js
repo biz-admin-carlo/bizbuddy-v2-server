@@ -109,6 +109,7 @@ const getUserProfile = async (req, res) => {
           : null;
     }
     const { password, Subscription, ...userData } = user;
+    // lastLoginAt is already on userData via spread
     return res.status(200).json({
       message: "User profile retrieved successfully.",
       data: {
@@ -127,7 +128,8 @@ const getUserProfile = async (req, res) => {
 const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
-    const { email, password, companyId } = req.query;
+    // Support both legacy GET (query params) and new POST (request body)
+    const { email, password, companyId } = { ...req.query, ...req.body };
 
     if (!email || !password || !companyId) {
       return res.status(400).json({
@@ -159,7 +161,7 @@ const signIn = async (req, res) => {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { updatedAt: new Date() },
+      data: { lastLoginAt: new Date() },
     });
 
     if (!JWT_SECRET) {
@@ -178,7 +180,10 @@ const signIn = async (req, res) => {
     console.log("## Success");
     return res.status(200).json({
       message: "Sign-in successful.",
-      data: { token },
+      data: {
+        token,
+        lastLoginAt: user.lastLoginAt, // previous session's last login (before this one)
+      },
     });
   } catch (error) {
     console.error("Error in signIn:", error);

@@ -3,7 +3,7 @@
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
-const { createNotification } = require("../../utils/notificationFunction");
+const { createNotification } = require("@services/notificationService");
 const nodemailer = require("nodemailer");
 
 const transporter = nodemailer.createTransport({
@@ -340,12 +340,31 @@ const confirmDeleteAccountRequest = async (req, res) => {
       },
     });
 
-    // 🟡 Trigger system notification for company admins
-    await createNotification("NOTIF001", user.id, {
-      title: "Account Deletion Request Submitted",
-      message: `${user.profile?.firstName || user.email} has submitted an account deletion request.`,
-      payload: { requestId: deletionRequest.id },
-    });
+    // Notify all admins in the company about the deletion request
+    try {
+      const employeeName = `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.email;
+      const adminUsers = await prisma.user.findMany({
+        where: {
+          companyId: user.companyId,
+          role: { in: ['admin', 'superadmin'] },
+          status: 'active',
+        },
+        select: { id: true, departmentId: true },
+      });
+      await Promise.all(adminUsers.map(admin =>
+        createNotification({
+          userId: admin.id,
+          companyId: user.companyId,
+          departmentId: admin.departmentId,
+          notificationCode: 'DELETION_REQUEST_SUBMITTED',
+          title: 'Account Deletion Request',
+          message: `${employeeName} has submitted an account deletion request.`,
+          payload: { requestId: deletionRequest.id, requesterId: user.id },
+        })
+      ));
+    } catch (notifError) {
+      console.error('❌ Failed to send deletion request notification:', notifError);
+    }
 
     // Mark OTP as used
     await prisma.otp.update({

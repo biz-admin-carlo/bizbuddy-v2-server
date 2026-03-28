@@ -2,6 +2,7 @@
 const admin = require("firebase-admin");
 
 let initialized = false;
+let configWarned = false;
 
 function initFirebase() {
   if (initialized) return admin;
@@ -10,9 +11,10 @@ function initFirebase() {
     process.env;
 
   if (!FIREBASE_PROJECT_ID || !FIREBASE_CLIENT_EMAIL || !FIREBASE_PRIVATE_KEY) {
-    console.warn(
-      "Firebase Admin not fully configured. Skipping initialization."
-    );
+    if (!configWarned) {
+      console.warn("Firebase Admin not fully configured. Push notifications disabled.");
+      configWarned = true;
+    }
     return null;
   }
 

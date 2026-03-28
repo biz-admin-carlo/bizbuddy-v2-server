@@ -4,7 +4,7 @@ const { prisma } = require('@config/connection');
 const { notifyUser } = require('./socketService');
 
 /**
- * Helper: Create notification and send via socket
+ * Helper: Persist notification to DB and emit via Socket.io
  */
 async function createNotification({
   userId,
@@ -16,20 +16,10 @@ async function createNotification({
   payload = {},
 }) {
   try {
-    // Save to database
     const notification = await prisma.notificationLog.create({
-      data: {
-        userId,
-        companyId,
-        departmentId,
-        notificationCode,
-        title,
-        message,
-        payload,
-      },
+      data: { userId, companyId, departmentId, notificationCode, title, message, payload },
     });
 
-    // Send via Socket.io
     notifyUser(userId, {
       id: notification.id,
       type: notificationCode,
@@ -48,26 +38,19 @@ async function createNotification({
 }
 
 /**
- * Notify employee about new shift assignment
+ * Notify employee about a direct shift assignment
+ * Code: SCHEDULE_ASSIGNED
  */
-async function notifyEmployeeShiftAssigned({
-  user,
-  shift,
-  dates,
-  assignedBy,
-  companyId,
-}) {
-  const employeeName = `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.email;
-  
-  const dateList = dates.length <= 3 
+async function notifyEmployeeShiftAssigned({ user, shift, dates, assignedBy, companyId }) {
+  const dateList = dates.length <= 3
     ? dates.map(d => new Date(d).toLocaleDateString()).join(', ')
     : `${dates.length} dates`;
 
   await createNotification({
     userId: user.id,
     companyId,
-    departmentId: user.departmentId,
-    notificationCode: 'NOTIF001', // General notification
+    departmentId: user.departmentId || null,
+    notificationCode: 'SCHEDULE_ASSIGNED',
     title: '📅 New Shift Assignment',
     message: `You've been assigned to "${shift.shiftName}" for ${dateList}`,
     payload: {
@@ -75,33 +58,25 @@ async function notifyEmployeeShiftAssigned({
       shiftName: shift.shiftName,
       startTime: shift.startTime,
       endTime: shift.endTime,
-      dates: dates,
-      assignedBy: assignedBy,
+      dates,
+      assignedBy,
     },
   });
 }
 
 /**
- * Notify employee about shift schedule (recurring)
+ * Notify employee about a recurring schedule assignment
+ * Code: SCHEDULE_UPDATED
  */
-async function notifyEmployeeScheduleCreated({
-  user,
-  shift,
-  schedule,
-  assignedBy,
-  companyId,
-  totalDates,
-}) {
+async function notifyEmployeeScheduleCreated({ user, shift, schedule, assignedBy, companyId, totalDates }) {
   const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const selectedDays = schedule.daysOfWeek
-    .map(day => daysOfWeek[day])
-    .join(', ');
+  const selectedDays = schedule.daysOfWeek.map(day => daysOfWeek[day]).join(', ');
 
   await createNotification({
     userId: user.id,
     companyId,
-    departmentId: user.departmentId,
-    notificationCode: 'NOTIF001',
+    departmentId: user.departmentId || null,
+    notificationCode: 'SCHEDULE_UPDATED',
     title: '📅 Recurring Shift Schedule',
     message: `You've been scheduled for "${shift.shiftName}" on ${selectedDays} (${totalDates} days total)`,
     payload: {
@@ -118,30 +93,16 @@ async function notifyEmployeeScheduleCreated({
 }
 
 /**
- * Notify management about bulk shift assignment
+ * Notify management about a bulk shift assignment
+ * Code: SCHEDULE_ASSIGNED_MANAGEMENT
  */
-async function notifyManagementShiftAssignment({
-  companyId,
-  shift,
-  assignedCount,
-  dates,
-  assignmentType,
-  assignedBy,
-}) {
-  // Get all admins, supervisors, and superadmins
+async function notifyManagementShiftAssignment({ companyId, shift, assignedCount, dates, assignmentType, assignedBy }) {
   const managementUsers = await prisma.user.findMany({
-    where: {
-      companyId,
-      role: { in: ['admin', 'superadmin', 'supervisor'] },
-      status: 'active',
-    },
-    select: {
-      id: true,
-      departmentId: true,
-    },
+    where: { companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+    select: { id: true, departmentId: true },
   });
 
-  const dateList = dates.length <= 3 
+  const dateList = dates.length <= 3
     ? dates.map(d => new Date(d).toLocaleDateString()).join(', ')
     : `${dates.length} dates`;
 
@@ -151,221 +112,63 @@ async function notifyManagementShiftAssignment({
     individual: `${assignedCount} employee(s)`,
   }[assignmentType] || 'employees';
 
-  // Notify each manager
-  const notifications = managementUsers.map(manager =>
+  await Promise.all(managementUsers.map(manager =>
     createNotification({
       userId: manager.id,
       companyId,
       departmentId: manager.departmentId,
-      notificationCode: 'NOTIF002',
+      notificationCode: 'SCHEDULE_ASSIGNED_MANAGEMENT',
       title: '✅ Shift Assignment Completed',
       message: `"${shift.shiftName}" assigned to ${assignmentTypeLabel} for ${dateList} (${assignedCount} assignments created)`,
-      payload: {
-        shiftId: shift.id,
-        shiftName: shift.shiftName,
-        assignedCount,
-        dates,
-        assignmentType,
-        assignedBy,
-      },
+      payload: { shiftId: shift.id, shiftName: shift.shiftName, assignedCount, dates, assignmentType, assignedBy },
     })
-  );
-
-  await Promise.all(notifications);
+  ));
 }
 
 /**
- * Notify management about recurring schedule creation
+ * Notify management when a recurring schedule is created
+ * Code: SCHEDULE_UPDATED
  */
-async function notifyEmployeeShiftAssigned(userId, shiftData) {
-    try {
-      if (!shiftData || !shiftData.shiftName) return;
-  
-      const message = `📅 New Shift Assignment\n\nYou've been assigned to "${shiftData.shiftName}" for ${shiftData.dates.join(', ')}`;
-  
-      await prisma.notification.create({
-        data: {
-          userId,
-          message,
-          type: 'shift_assigned',
-        },
-      });
-  
-      io.to(userId).emit('notification', {
-        message,
-        type: 'shift_assigned',
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      console.error('Error notifying employee about shift assignment:', error);
-    }
-  }
-  
-  /**
-   * Notify employee when assigned to a recurring schedule
-   */
-  async function notifyEmployeeScheduleCreated(userId, scheduleData) {
-    try {
-      if (!scheduleData || !scheduleData.daysOfWeek) return;
-  
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const daysFormatted = scheduleData.daysOfWeek
-        .sort((a, b) => a - b)
-        .map(d => dayNames[d])
-        .join(', ');
-  
-      const message = `📅 Recurring Shift Schedule\n\nYou've been scheduled for "${scheduleData.shiftName}" on ${daysFormatted} (${scheduleData.totalDays} days total)`;
-  
-      await prisma.notification.create({
-        data: {
-          userId,
-          message,
-          type: 'schedule_created',
-        },
-      });
-  
-      io.to(userId).emit('notification', {
-        message,
-        type: 'schedule_created',
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      console.error('Error notifying employee about schedule creation:', error);
-    }
-  }
-  
-  /**
-   * Notify management about shift assignments
-   */
-  async function notifyManagementShiftAssignment(companyId, assignmentData) {
-    try {
-      if (!assignmentData) return;
-  
-      const managers = await prisma.user.findMany({
-        where: {
-          companyId,
-          role: { in: ['admin', 'superadmin', 'supervisor'] },
-        },
-        select: { id: true },
-      });
-  
-      const message = `✅ Shift Assignment Completed\n\n"${assignmentData.shiftName}" assigned to ${assignmentData.employeeCount} employee(s) for ${assignmentData.dates.join(', ')} (${assignmentData.totalAssignments} assignments created)`;
-  
-      const notifications = managers.map(manager => ({
-        userId: manager.id,
-        message,
-        type: 'shift_assignment',
-        createdAt: new Date(),
-      }));
-  
-      if (notifications.length > 0) {
-        await prisma.notification.createMany({ data: notifications });
-  
-        managers.forEach(manager => {
-          io.to(manager.id).emit('notification', {
-            message,
-            type: 'shift_assignment',
-            timestamp: new Date(),
-          });
-        });
-      }
-    } catch (error) {
-      console.error('Error notifying management about shift assignment:', error);
-    }
-  }
-  
-  /**
-   * Notify management when a recurring schedule is created
-   */
-  async function notifyManagementScheduleCreated(companyId, scheduleData) {
-    try {
-      // Validation
-      if (!scheduleData || !scheduleData.daysOfWeek) {
-        console.error('Invalid scheduleData provided to notifyManagementScheduleCreated');
-        return;
-      }
-  
-      const managers = await prisma.user.findMany({
-        where: {
-          companyId,
-          role: { in: ['admin', 'superadmin', 'supervisor'] },
-        },
-        select: { id: true },
-      });
-  
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const daysFormatted = scheduleData.daysOfWeek
-        .sort((a, b) => a - b)
-        .map(d => dayNames[d])
-        .join(', ');
-  
-      const message = `✅ Schedule Created\n\nRecurring schedule for "${scheduleData.shiftName}" (${daysFormatted}) assigned to ${scheduleData.targetCount} employee(s) - ${scheduleData.totalShifts} shifts created`;
-  
-      const notifications = managers.map(manager => ({
-        userId: manager.id,
-        message,
-        type: 'schedule_created',
-        createdAt: new Date(),
-      }));
-  
-      if (notifications.length > 0) {
-        await prisma.notification.createMany({ data: notifications });
-  
-        managers.forEach(manager => {
-          io.to(manager.id).emit('notification', {
-            message,
-            type: 'schedule_created',
-            timestamp: new Date(),
-          });
-        });
-      }
-    } catch (error) {
-      console.error('Error notifying management about schedule creation:', error);
-    }
-  }
-  
-  /**
-   * Notify employee when their shift is replaced due to conflict
-   */
-  async function notifyEmployeeShiftReplaced(userId, replacementData) {
-    try {
-      if (!replacementData) return;
-  
-      const message = `⚠️ Shift Changed\n\nYour "${replacementData.oldShiftName}" on ${replacementData.date} was replaced with "${replacementData.newShiftName}"`;
-  
-      await prisma.notification.create({
-        data: {
-          userId,
-          message,
-          type: 'shift_replaced',
-        },
-      });
-  
-      io.to(userId).emit('notification', {
-        message,
-        type: 'shift_replaced',
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      console.error('Error notifying employee about shift replacement:', error);
-    }
-  }
-  
+async function notifyManagementScheduleCreated({ companyId, shift, schedule, targetCount, totalShifts, assignedBy }) {
+  const managementUsers = await prisma.user.findMany({
+    where: { companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+    select: { id: true, departmentId: true },
+  });
+
+  const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const selectedDays = schedule.daysOfWeek.map(day => daysOfWeek[day]).join(', ');
+
+  await Promise.all(managementUsers.map(manager =>
+    createNotification({
+      userId: manager.id,
+      companyId,
+      departmentId: manager.departmentId,
+      notificationCode: 'SCHEDULE_UPDATED',
+      title: '✅ Schedule Created',
+      message: `Recurring schedule for "${shift.shiftName}" (${selectedDays}) assigned to ${targetCount} employee(s) — ${totalShifts} shifts created`,
+      payload: {
+        shiftId: shift.id,
+        shiftName: shift.shiftName,
+        scheduleId: schedule.id,
+        daysOfWeek: selectedDays,
+        totalShifts,
+        targetCount,
+        assignedBy,
+      },
+    })
+  ));
+}
+
 /**
- * Notify employee about shift conflict resolution
+ * Notify employee when their shift is replaced due to a conflict
+ * Code: SCHEDULE_REPLACED
  */
-async function notifyEmployeeShiftReplaced({
-  user,
-  oldShift,
-  newShift,
-  date,
-  companyId,
-}) {
+async function notifyEmployeeShiftReplaced({ user, oldShift, newShift, date, companyId }) {
   await createNotification({
     userId: user.id,
     companyId,
-    departmentId: user.departmentId,
-    notificationCode: 'NOTIF003',
+    departmentId: user.departmentId || null,
+    notificationCode: 'SCHEDULE_REPLACED',
     title: '⚠️ Shift Changed',
     message: `Your "${oldShift.shiftName}" on ${new Date(date).toLocaleDateString()} was replaced with "${newShift.shiftName}"`,
     payload: {
