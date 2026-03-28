@@ -18,6 +18,7 @@
 const { prisma } = require("@config/connection");
 const moment = require("moment-timezone");
 const { randomUUID } = require("crypto");
+const { createNotification } = require("@services/notificationService");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -767,6 +768,51 @@ const updateCutoffStatus = async (req, res) => {
 
     console.log("[✅ Cutoff status updated]", id, "→", status);
 
+    // Send notifications based on the new status
+    try {
+      const startStr = cutoffPeriod.startDate ? new Date(cutoffPeriod.startDate).toLocaleDateString() : null;
+      const endStr = cutoffPeriod.endDate ? new Date(cutoffPeriod.endDate).toLocaleDateString() : null;
+      const periodLabel = startStr && endStr ? `${startStr} - ${endStr}` : `Cutoff #${id.slice(-6)}`;
+
+      if (status === 'locked') {
+        // Notify management
+        const managementUsers = await prisma.user.findMany({
+          where: { companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+          select: { id: true, departmentId: true },
+        });
+        await Promise.all(managementUsers.map(manager =>
+          createNotification({
+            userId: manager.id,
+            companyId,
+            departmentId: manager.departmentId,
+            notificationCode: 'CUTOFF_PERIOD_LOCKED',
+            title: 'Cutoff Period Locked',
+            message: `Cutoff period ${periodLabel} has been locked and is ready for processing.`,
+            payload: { cutoffPeriodId: id, periodLabel },
+          })
+        ));
+      } else if (status === 'processed') {
+        // Notify all active employees in the company
+        const employees = await prisma.user.findMany({
+          where: { companyId, status: 'active' },
+          select: { id: true, departmentId: true },
+        });
+        await Promise.all(employees.map(emp =>
+          createNotification({
+            userId: emp.id,
+            companyId,
+            departmentId: emp.departmentId,
+            notificationCode: 'CUTOFF_PROCESSED',
+            title: 'Payroll Processed',
+            message: `Payroll for cutoff period ${periodLabel} has been processed.`,
+            payload: { cutoffPeriodId: id, periodLabel },
+          })
+        ));
+      }
+    } catch (notifError) {
+      console.error('❌ Failed to send cutoff status notification:', notifError);
+    }
+
     return res.status(200).json({
       message: `Cutoff period status updated to ${status}.`,
       data: updated,
@@ -832,6 +878,31 @@ const finalizeCutoffPeriod = async (req, res) => {
     });
 
     console.log("[✅ Cutoff finalized]", id, `— ${stats.approved} approved, ${stats.excluded} excluded`);
+
+    // Notify management that the cutoff period is locked
+    try {
+      const startStr = cutoffPeriod.startDate ? new Date(cutoffPeriod.startDate).toLocaleDateString() : null;
+      const endStr = cutoffPeriod.endDate ? new Date(cutoffPeriod.endDate).toLocaleDateString() : null;
+      const periodLabel = startStr && endStr ? `${startStr} - ${endStr}` : `Cutoff #${id.slice(-6)}`;
+
+      const managementUsers = await prisma.user.findMany({
+        where: { companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+        select: { id: true, departmentId: true },
+      });
+      await Promise.all(managementUsers.map(manager =>
+        createNotification({
+          userId: manager.id,
+          companyId,
+          departmentId: manager.departmentId,
+          notificationCode: 'CUTOFF_PERIOD_LOCKED',
+          title: 'Cutoff Period Locked',
+          message: `Cutoff period ${periodLabel} has been locked and is ready for processing.`,
+          payload: { cutoffPeriodId: id, periodLabel, finalStats: stats },
+        })
+      ));
+    } catch (notifError) {
+      console.error('❌ Failed to send cutoff finalize notification:', notifError);
+    }
 
     return res.status(200).json({
       message:  "Cutoff period finalized and locked. Records are now passed to payroll.",

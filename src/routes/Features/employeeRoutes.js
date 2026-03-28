@@ -12,9 +12,11 @@ const {
   updateEmployeePresence,
   changeEmployeePassword,
   getEmployeeById,
+  bulkCreateEmployees,
 } = require("@controllers/Features/employeeController");
 
 router.get("/", authenticate, authorizeRoles("admin", "superadmin", "supervisor"), getAllEmployees);
+router.post("/bulk", authenticate, authorizeRoles("admin", "superadmin"), bulkCreateEmployees);
 router.post("/", authenticate, authorizeRoles("admin", "superadmin"), createEmployee);
 router.put("/:id", authenticate, authorizeRoles("admin", "superadmin"), updateEmployee);
 router.delete("/:id", authenticate, authorizeRoles("admin", "superadmin"), deleteEmployee);

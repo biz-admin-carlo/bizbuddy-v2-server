@@ -1,6 +1,7 @@
 // src/controllers/Features/requestPunchLogController.js
 
 const { prisma } = require("@config/connection");
+const { createNotification } = require("@services/notificationService");
 
 const submitRequestPunchLog = async (req, res) => {
   try {
@@ -104,6 +105,31 @@ const submitRequestPunchLog = async (req, res) => {
 
     console.log("[✅ Punch log request created]", newRequest);
 
+    // Notify management
+    try {
+      const employeeName = newRequest.user?.profile
+        ? `${newRequest.user.profile.firstName || ''} ${newRequest.user.profile.lastName || ''}`.trim()
+        : newRequest.user?.email || 'An employee';
+      const dateStr = new Date(requestedDate).toLocaleDateString();
+      const managementUsers = await prisma.user.findMany({
+        where: { companyId: req.user.companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+        select: { id: true, departmentId: true },
+      });
+      await Promise.all(managementUsers.map(manager =>
+        createNotification({
+          userId: manager.id,
+          companyId: req.user.companyId,
+          departmentId: manager.departmentId,
+          notificationCode: 'CONTEST_REQUEST_SUBMITTED',
+          title: 'Time Correction Request',
+          message: `${employeeName} submitted a time correction request for ${dateStr}.`,
+          payload: { requestId: newRequest.id, requestedDate, requesterId: userId },
+        })
+      ));
+    } catch (notifError) {
+      console.error('❌ Failed to send punch log submission notification:', notifError);
+    }
+
     return res.status(201).json({
       message: "Punch log request submitted successfully.",
       data: newRequest,
@@ -181,6 +207,9 @@ const viewMyRequestedPunchLogs = async (req, res) => {
 const viewAllRequestedPunchLogs = async (req, res) => {
   try {
     const user = req.user;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+    const status = req.query.status;
 
     let whereClause = {};
 
@@ -207,32 +236,39 @@ const viewAllRequestedPunchLogs = async (req, res) => {
       };
     }
 
-    const requests = await prisma.requestedTimeLog.findMany({
-      where: whereClause,
-      include: {
-        user: {
-          select: {
-            id: true,
-            email: true,
-            role: true,
-            departmentId: true,
-            profile: {
-              select: { firstName: true, lastName: true },
+    if (status && status !== "ALL") whereClause.status = status;
+
+    const [requests, total] = await Promise.all([
+      prisma.requestedTimeLog.findMany({
+        where: whereClause,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              role: true,
+              departmentId: true,
+              profile: {
+                select: { firstName: true, lastName: true },
+              },
+            },
+          },
+          approver: {
+            select: {
+              id: true,
+              email: true,
+              profile: {
+                select: { firstName: true, lastName: true },
+              },
             },
           },
         },
-        approver: {
-          select: {
-            id: true,
-            email: true,
-            profile: {
-              select: { firstName: true, lastName: true },
-            },
-          },
-        },
-      },
-      orderBy: { submittedAt: "desc" },
-    });
+        orderBy: { submittedAt: "desc" },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.requestedTimeLog.count({ where: whereClause }),
+    ]);
 
     const formattedData = requests.map((req) => ({
       id: req.id,
@@ -256,8 +292,8 @@ const viewAllRequestedPunchLogs = async (req, res) => {
 
     return res.status(200).json({
       message: "Requested punch logs retrieved successfully.",
-      total: formattedData.length,
       data: formattedData,
+      pagination: { total, limit, offset, hasMore: offset + limit < total },
     });
   } catch (error) {
     console.error("❌ Error fetching all requested punch logs:", error);
@@ -347,6 +383,26 @@ const approveRequestedPunchLog = async (req, res) => {
       },
     });
 
+    // Notify the requesting employee
+    try {
+      const dateStr = new Date(request.requestedDate).toLocaleDateString();
+      const reqUser = await prisma.user.findUnique({
+        where: { id: request.userId },
+        select: { companyId: true, departmentId: true },
+      });
+      await createNotification({
+        userId: request.userId,
+        companyId: reqUser?.companyId || req.user.companyId,
+        departmentId: reqUser?.departmentId || null,
+        notificationCode: 'CONTEST_REQUEST_APPROVED',
+        title: 'Time Correction Approved',
+        message: `Your time correction request for ${dateStr} has been approved.`,
+        payload: { requestId: id, requestedDate: request.requestedDate },
+      });
+    } catch (notifError) {
+      console.error('❌ Failed to send punch log approval notification:', notifError);
+    }
+
     return res.status(200).json({
       message: "Punch log request approved and time log created successfully.",
       data: {
@@ -410,6 +466,26 @@ const rejectRequestedPunchLog = async (req, res) => {
         },
       },
     });
+
+    // Notify the requesting employee
+    try {
+      const dateStr = new Date(request.requestedDate).toLocaleDateString();
+      const reqUser = await prisma.user.findUnique({
+        where: { id: request.userId },
+        select: { companyId: true, departmentId: true },
+      });
+      await createNotification({
+        userId: request.userId,
+        companyId: reqUser?.companyId || req.user.companyId,
+        departmentId: reqUser?.departmentId || null,
+        notificationCode: 'CONTEST_REQUEST_REJECTED',
+        title: 'Time Correction Rejected',
+        message: `Your time correction request for ${dateStr} has been rejected.`,
+        payload: { requestId: id, requestedDate: request.requestedDate },
+      });
+    } catch (notifError) {
+      console.error('❌ Failed to send punch log rejection notification:', notifError);
+    }
 
     return res.status(200).json({
       message: "Punch log request rejected successfully.",

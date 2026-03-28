@@ -30,7 +30,7 @@ function initializeCronJobs() {
   cron.schedule('*/10 * * * *', async () => {
     await autoClockOutSafeguard();
   });
-  console.log('✅ Auto 13-hour clock-out: Every 10 minutes');
+  console.log('✅ Auto 20-hour clock-out safeguard: Every 10 minutes');
 
   // Job 4: Send morning report at 10:00 AM daily
   cron.schedule('0 10 * * *', async () => {

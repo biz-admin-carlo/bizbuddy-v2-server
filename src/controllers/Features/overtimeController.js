@@ -1,6 +1,7 @@
 // src/controllers/Features/overtimeController.js
 
 const { prisma } = require("@config/connection");
+const { createNotification } = require("@services/notificationService");
 
 function format(ot) {
   return {
@@ -168,6 +169,31 @@ const submitOvertime = async (req, res) => {
       },
     });
 
+    // Notify management
+    try {
+      const employeeName = newOT.requester?.profile
+        ? `${newOT.requester.profile.firstName || ''} ${newOT.requester.profile.lastName || ''}`.trim()
+        : newOT.requester?.email || 'An employee';
+      const otDate = new Date(newOT.timeLog.timeIn).toLocaleDateString();
+      const managementUsers = await prisma.user.findMany({
+        where: { companyId: req.user.companyId, role: { in: ['admin', 'superadmin', 'supervisor'] }, status: 'active' },
+        select: { id: true, departmentId: true },
+      });
+      await Promise.all(managementUsers.map(manager =>
+        createNotification({
+          userId: manager.id,
+          companyId: req.user.companyId,
+          departmentId: manager.departmentId,
+          notificationCode: 'OVERTIME_REQUEST_SUBMITTED',
+          title: 'Overtime Request Submitted',
+          message: `${employeeName} submitted an overtime request for ${otDate} (${requestedHours} hrs).`,
+          payload: { overtimeId: newOT.id, requesterId: req.user.id },
+        })
+      ));
+    } catch (notifError) {
+      console.error('❌ Failed to send OT submission notification:', notifError);
+    }
+
     return res.status(201).json({
       message: "Overtime request submitted successfully.",
       data: {
@@ -238,6 +264,7 @@ const decideOT = (newStatus) => async (req, res) => {
 
     const ot = await prisma.overtime.findFirst({
       where: { id, approverId: req.user.id, status: "pending" },
+      include: { timeLog: { select: { timeIn: true } } },
     });
     if (!ot) {
       return res
@@ -249,6 +276,24 @@ const decideOT = (newStatus) => async (req, res) => {
       where: { id },
       data: { status: newStatus, approverComments },
     });
+
+    // Notify the requesting employee
+    try {
+      const otDate = ot.timeLog?.timeIn
+        ? new Date(ot.timeLog.timeIn).toLocaleDateString()
+        : 'your recent date';
+      await createNotification({
+        userId: ot.requesterId,
+        companyId: ot.companyId,
+        departmentId: ot.departmentId || null,
+        notificationCode: newStatus === 'approved' ? 'OVERTIME_REQUEST_APPROVED' : 'OVERTIME_REQUEST_REJECTED',
+        title: newStatus === 'approved' ? 'Overtime Request Approved' : 'Overtime Request Rejected',
+        message: `Your overtime request for ${otDate} has been ${newStatus}.`,
+        payload: { overtimeId: ot.id },
+      });
+    } catch (notifError) {
+      console.error('❌ Failed to send OT decision notification:', notifError);
+    }
 
     return res
       .status(200)
@@ -274,9 +319,11 @@ const deleteOT = async (req, res) => {
 };
 
 const getAllOT = async (req, res) => {
-  console.log(req.user);
-
   try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+    const status = req.query.status; // optional filter
+
     let whereClause = {};
 
     // Build filter based on user role
@@ -311,29 +358,39 @@ const getAllOT = async (req, res) => {
         };
     }
 
-    const ots = await prisma.overtime.findMany({
-      where: whereClause,
-      include: {
-        timeLog: true,
-        requester: {
-          select: {
-            id: true,
-            email: true,
-            username: true,
-            departmentId: true,
-            companyId: true,
-            department: { select: { id: true, name: true } },
-            company: { select: { id: true, name: true } },
+    if (status) whereClause.status = status;
+
+    const [ots, total] = await Promise.all([
+      prisma.overtime.findMany({
+        where: whereClause,
+        include: {
+          timeLog: true,
+          requester: {
+            select: {
+              id: true,
+              email: true,
+              username: true,
+              departmentId: true,
+              companyId: true,
+              department: { select: { id: true, name: true } },
+              company: { select: { id: true, name: true } },
+            },
+          },
+          approver: {
+            select: { id: true, email: true, username: true },
           },
         },
-        approver: {
-          select: { id: true, email: true, username: true },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.overtime.count({ where: whereClause }),
+    ]);
 
-    return res.status(200).json({ data: ots.map(format) });
+    return res.status(200).json({
+      data: ots.map(format),
+      pagination: { total, limit, offset, hasMore: offset + limit < total },
+    });
   } catch (err) {
     console.error("getAllOT:", err);
     return res.status(500).json({ message: "Internal server error." });

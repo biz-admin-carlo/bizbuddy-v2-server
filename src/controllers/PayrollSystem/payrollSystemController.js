@@ -3,6 +3,7 @@
 const { prisma } = require("@config/connection");
 const generatePayslipPDF = require('@utils/generatePayslipPDF');
 const calculateYTD = require('@utils/calculateYTD');
+const { createNotification } = require('@services/notificationService');
 
 exports.getEmployeeList = async (req, res) => {
   try {
@@ -534,6 +535,25 @@ exports.generatePayslipPDF = async (req, res) => {
     const startDate = new Date(payrollRun.periodStart).toISOString().split('T')[0];
     const endDate = new Date(payrollRun.periodEnd).toISOString().split('T')[0];
     const filename = `Payslip_${cleanName}_${startDate}_to_${endDate}.pdf`;
+
+    // Notify the employee that their payslip is available
+    try {
+      const empUser = await prisma.user.findUnique({
+        where: { id: employeeId },
+        select: { departmentId: true },
+      });
+      await createNotification({
+        userId: employeeId,
+        companyId,
+        departmentId: empUser?.departmentId || null,
+        notificationCode: 'PAYSLIP_GENERATED',
+        title: 'Payslip Available',
+        message: `Your payslip for ${startDate} - ${endDate} is now available.`,
+        payload: { payrollRunId, periodStart: payrollRun.periodStart, periodEnd: payrollRun.periodEnd },
+      });
+    } catch (notifError) {
+      console.error('❌ Failed to send payslip notification:', notifError);
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

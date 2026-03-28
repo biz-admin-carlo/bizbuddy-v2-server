@@ -2,6 +2,23 @@
 
 const bcrypt = require("bcryptjs");
 const { prisma } = require("@config/connection");
+const { sendMail } = require("@utils/mailer");
+const { renderWelcome } = require("@emails/renderTemplate");
+
+/**
+ * Generate a unique username in the format: first initial + last name (e.g. ccorcuera)
+ * If taken, appends an incrementing number: ccorcuera1, ccorcuera2, etc.
+ */
+async function generateUsername(firstName, lastName) {
+  const base = (firstName.charAt(0) + lastName).toLowerCase().replace(/[^a-z0-9]/g, "");
+  let username = base;
+  let counter = 1;
+  while (await prisma.user.findUnique({ where: { username } })) {
+    username = `${base}${counter}`;
+    counter++;
+  }
+  return username;
+}
 
 const getAllEmployees = async (req, res) => {
   try {
@@ -99,11 +116,14 @@ const createEmployee = async (req, res) => {
     }
 
     const cleanedEmail = email.trim().toLowerCase();
-    const cleanedUsername = username ? username.trim().toLowerCase() : cleanedEmail;
     const cleanedEmployeeId = employeeId ? employeeId.trim() : null;
 
+    const cleanedUsername = username
+      ? username.trim().toLowerCase()
+      : await generateUsername(firstName, lastName);
+
     const existingUsername = await prisma.user.findUnique({ where: { username: cleanedUsername } });
-    if (existingUsername) return res.status(409).json({ error: "Username already exists." });
+    if (existingUsername && username) return res.status(409).json({ error: "Username already exists." });
     
     const existingEmail = await prisma.user.findFirst({ 
       where: { email: cleanedEmail, companyId: req.user.companyId } 
@@ -573,6 +593,212 @@ const getEmployeeById = async (req, res) => {
   }
 };
 
+const bulkCreateEmployees = async (req, res) => {
+  try {
+    const { employees } = req.body;
+
+    if (!Array.isArray(employees) || employees.length === 0) {
+      return res.status(400).json({ error: "employees must be a non-empty array." });
+    }
+
+    if (employees.length > 100) {
+      return res.status(400).json({ error: "Maximum 100 employees per bulk request." });
+    }
+
+    const targetCompanyId = req.user.companyId;
+
+    // Fetch company name once for the welcome email
+    const company = await prisma.company.findUnique({
+      where: { id: targetCompanyId },
+      select: { name: true },
+    });
+    const companyName = company?.name || "BizBuddy";
+
+    const created = [];
+    const failed = [];
+
+    for (let i = 0; i < employees.length; i++) {
+      const emp = employees[i];
+      const index = i;
+
+      try {
+        const {
+          email, username, password, role, firstName, lastName, phone, status,
+          departmentId, hireDate, employeeId,
+          jobTitle, employmentStatus, exemptStatus, employmentType,
+          workLocation, probationEndDate, timeZone, workState, supervisorId,
+        } = emp;
+
+        if (!email || !password || !firstName || !lastName) {
+          failed.push({ index, email: email || null, reason: "Missing required fields: email, password, firstName, lastName" });
+          continue;
+        }
+
+        const cleanedEmail = email.trim().toLowerCase();
+        const cleanedEmployeeId = employeeId ? employeeId.trim() : null;
+
+        const cleanedUsername = username
+          ? username.trim().toLowerCase()
+          : await generateUsername(firstName, lastName);
+
+        // Only reject duplicate username if it was explicitly provided
+        if (username) {
+          const existingUsername = await prisma.user.findUnique({ where: { username: cleanedUsername } });
+          if (existingUsername) {
+            failed.push({ index, email: cleanedEmail, reason: "Username already exists." });
+            continue;
+          }
+        }
+
+        const existingEmail = await prisma.user.findFirst({
+          where: { email: cleanedEmail, companyId: targetCompanyId },
+        });
+        if (existingEmail) {
+          failed.push({ index, email: cleanedEmail, reason: "Email already exists in this company." });
+          continue;
+        }
+
+        if (cleanedEmployeeId) {
+          const existingEmpId = await prisma.user.findFirst({
+            where: { employeeId: cleanedEmployeeId, companyId: targetCompanyId },
+          });
+          if (existingEmpId) {
+            failed.push({ index, email: cleanedEmail, reason: "Employee ID already exists in this company." });
+            continue;
+          }
+        }
+
+        const hashedPassword = bcrypt.hashSync(password, 10);
+
+        let parsedHireDate = null;
+        if (hireDate) {
+          parsedHireDate = new Date(hireDate);
+          if (isNaN(parsedHireDate.getTime())) {
+            failed.push({ index, email: cleanedEmail, reason: "Invalid hire date format." });
+            continue;
+          }
+        }
+
+        let parsedProbationEndDate = null;
+        if (probationEndDate) {
+          parsedProbationEndDate = new Date(probationEndDate);
+          if (isNaN(parsedProbationEndDate.getTime())) {
+            failed.push({ index, email: cleanedEmail, reason: "Invalid probation end date format." });
+            continue;
+          }
+        }
+
+        const employmentDetailData = {};
+        if (jobTitle) employmentDetailData.jobTitle = jobTitle.trim();
+        if (employmentStatus) employmentDetailData.employmentStatus = employmentStatus;
+        if (exemptStatus) employmentDetailData.exemptStatus = exemptStatus;
+        if (employmentType) employmentDetailData.employmentType = employmentType;
+        if (workLocation) employmentDetailData.workLocation = workLocation;
+        if (parsedProbationEndDate) employmentDetailData.probationEndDate = parsedProbationEndDate;
+        if (timeZone) employmentDetailData.timeZone = timeZone;
+        if (workState) employmentDetailData.workState = workState;
+        if (departmentId) employmentDetailData.departmentId = departmentId;
+        if (supervisorId) employmentDetailData.supervisorId = supervisorId;
+
+        const newEmployee = await prisma.user.create({
+          data: {
+            email: cleanedEmail,
+            username: cleanedUsername,
+            password: hashedPassword,
+            role: role || "employee",
+            status: status !== undefined ? status : "active",
+            hireDate: parsedHireDate,
+            employeeId: cleanedEmployeeId,
+            company: { connect: { id: targetCompanyId } },
+            ...(departmentId ? { department: { connect: { id: departmentId } } } : {}),
+            profile: {
+              create: {
+                firstName: firstName.trim(),
+                lastName: lastName.trim(),
+                phoneNumber: phone ? phone.trim() : null,
+                username: cleanedUsername,
+                email: cleanedEmail,
+              },
+            },
+            ...(Object.keys(employmentDetailData).length > 0 ? {
+              employmentDetail: { create: employmentDetailData },
+            } : {}),
+          },
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            role: true,
+            status: true,
+            hireDate: true,
+            employeeId: true,
+            profile: { select: { firstName: true, lastName: true } },
+          },
+        });
+
+        created.push(newEmployee);
+
+        // Send credentials email (non-blocking)
+        try {
+          const html = renderWelcome({
+            firstName: firstName.trim(),
+            companyName,
+            email: cleanedEmail,
+            password,
+          });
+          await sendMail({
+            to: cleanedEmail,
+            subject: "Welcome to BizBuddy — your account is ready",
+            html,
+            text: `Hi ${firstName.trim()}, your BizBuddy account has been created.\nEmail: ${cleanedEmail}\nPassword: ${password}`,
+          });
+          await prisma.emailNotificationLog.create({
+            data: {
+              notificationType: "WELCOME_EMAIL",
+              recipientEmail: cleanedEmail,
+              recipientUserId: newEmployee.id,
+              companyId: targetCompanyId,
+              subject: "Welcome to BizBuddy — your account is ready",
+              body: JSON.stringify({ firstName: firstName.trim(), companyName }),
+              status: "sent",
+            },
+          });
+
+          console.log(`[bulkCreateEmployees] Welcome email sent to ${cleanedEmail}`);
+        } catch (emailErr) {
+          console.error(`[bulkCreateEmployees] Failed to send email to ${cleanedEmail}:`, emailErr);
+
+          try {
+            await prisma.emailNotificationLog.create({
+              data: {
+                notificationType: "WELCOME_EMAIL",
+                recipientEmail: cleanedEmail,
+                recipientUserId: newEmployee.id,
+                companyId: targetCompanyId,
+                subject: "Welcome to BizBuddy — your account is ready",
+                body: JSON.stringify({ firstName: firstName.trim(), companyName }),
+                status: "failed",
+                errorMessage: emailErr.message,
+              },
+            });
+          } catch (_) {}
+        }
+      } catch (empErr) {
+        console.error(`[bulkCreateEmployees] Error at index ${index}:`, empErr);
+        failed.push({ index, email: emp.email || null, reason: empErr.message });
+      }
+    }
+
+    return res.status(207).json({
+      message: `Bulk creation complete. ${created.length} created, ${failed.length} failed.`,
+      data: { created, failed },
+    });
+  } catch (error) {
+    console.error("Error in bulkCreateEmployees:", error);
+    return res.status(500).json({ error: "Internal server error." });
+  }
+};
+
 module.exports = {
   getAllEmployees,
   createEmployee,
@@ -581,4 +807,5 @@ module.exports = {
   updateEmployeePresence,
   changeEmployeePassword,
   getEmployeeById,
+  bulkCreateEmployees,
 };
