@@ -1,7 +1,8 @@
-const { prisma } = require('@config/connection');
-const { sendEmail } = require('./emailService');
-const { notifyUser, notifyManagement } = require('./socketService');
-const { getIO } = require('@config/socket');
+const { prisma } = require("@config/connection");
+const { getMessaging } = require("@config/firebase");
+const { sendEmail } = require("./emailService");
+const { notifyUser, notifyManagement } = require("./socketService");
+const { getIO } = require("@config/socket");
 /**
  * Create internal notification (database + socket)
  */
@@ -39,9 +40,32 @@ async function createNotification({
       seen: false,
     });
 
+    const messaging = getMessaging();
+    if (messaging) {
+      try {
+        const { deviceToken } = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { deviceToken: true },
+        });
+        if (deviceToken) {
+          await messaging.send({
+            token: deviceToken,
+            notification: { title, body: message || "" },
+            data: {
+              type: String(notificationCode),
+              notificationId: String(notification.id),
+              payload: JSON.stringify(payload || {}),
+            },
+          });
+        }
+      } catch (pushErr) {
+        console.error("❌ FCM push error:", pushErr);
+      }
+    }
+
     return notification;
   } catch (error) {
-    console.error('❌ Error creating notification:', error);
+    console.error("❌ Error creating notification:", error);
     throw error;
   }
 }
@@ -77,7 +101,7 @@ async function sendEmailNotification({
         companyId,
         subject,
         body: JSON.stringify(context),
-        status: result.success ? 'sent' : 'failed',
+        status: result.success ? "sent" : "failed",
         errorMessage: result.error || null,
         metadata,
       },
@@ -85,7 +109,7 @@ async function sendEmailNotification({
 
     return result;
   } catch (error) {
-    console.error('❌ Error sending email notification:', error);
+    console.error("❌ Error sending email notification:", error);
     throw error;
   }
 }
@@ -101,8 +125,8 @@ async function notifyMissedClockIn(employee, shift, company) {
     userId: user.id,
     companyId: company.id,
     departmentId: user.departmentId,
-    notificationCode: 'MISSED_CLOCK_IN',
-    title: '⏰ Missed Clock-In',
+    notificationCode: "MISSED_CLOCK_IN",
+    title: "⏰ Missed Clock-In",
     message: `You haven't clocked in for your ${shiftDetails.shiftName} shift scheduled at ${shiftDetails.startTime}.`,
     payload: {
       shiftId: shiftDetails.shiftId,
@@ -115,17 +139,19 @@ async function notifyMissedClockIn(employee, shift, company) {
   if (company.notifyEmployeeMissedIn && user.email) {
     await sendEmailNotification({
       to: user.email,
-      subject: '⏰ Reminder: Missing Clock-In',
-      templateName: 'missedClockIn',
+      subject: "⏰ Reminder: Missing Clock-In",
+      templateName: "missedClockIn",
       context: {
-        employeeName: `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.username,
+        employeeName:
+          `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() ||
+          user.username,
         shiftName: shiftDetails.shiftName,
         scheduledStart: shiftDetails.startTime,
-        currentTime: new Date().toLocaleTimeString('en-US'),
-        department: user.department?.name || 'N/A',
+        currentTime: new Date().toLocaleTimeString("en-US"),
+        department: user.department?.name || "N/A",
         appUrl: process.env.CLIENT_URL,
       },
-      notificationType: 'MISSED_CLOCK_IN',
+      notificationType: "MISSED_CLOCK_IN",
       recipientUserId: user.id,
       companyId: company.id,
       metadata: { shiftId: shiftDetails.shiftId },
@@ -144,9 +170,9 @@ async function notifyMissedClockOut(employee, timeLog, company) {
     userId: user.id,
     companyId: company.id,
     departmentId: user.departmentId,
-    notificationCode: 'MISSED_CLOCK_OUT',
-    title: '⏰ Missed Clock-Out',
-    message: `You haven't clocked out yet. Your shift ended at ${new Date(timeLog.expectedClockOut).toLocaleTimeString('en-US')}.`,
+    notificationCode: "MISSED_CLOCK_OUT",
+    title: "⏰ Missed Clock-Out",
+    message: `You haven't clocked out yet. Your shift ended at ${new Date(timeLog.expectedClockOut).toLocaleTimeString("en-US")}.`,
     payload: {
       timeLogId: timeLog.id,
       clockInTime: timeLog.timeIn,
@@ -158,16 +184,20 @@ async function notifyMissedClockOut(employee, timeLog, company) {
   if (company.notifyEmployeeMissedOut && user.email) {
     await sendEmailNotification({
       to: user.email,
-      subject: '⏰ Reminder: Missing Clock-Out',
-      templateName: 'missedClockOut',
+      subject: "⏰ Reminder: Missing Clock-Out",
+      templateName: "missedClockOut",
       context: {
-        employeeName: `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() || user.username,
-        clockInTime: new Date(timeLog.timeIn).toLocaleTimeString('en-US'),
-        expectedClockOut: new Date(timeLog.expectedClockOut).toLocaleTimeString('en-US'),
+        employeeName:
+          `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() ||
+          user.username,
+        clockInTime: new Date(timeLog.timeIn).toLocaleTimeString("en-US"),
+        expectedClockOut: new Date(timeLog.expectedClockOut).toLocaleTimeString(
+          "en-US",
+        ),
         hoursWorked: timeLog.hoursWorked,
         appUrl: process.env.CLIENT_URL,
       },
-      notificationType: 'MISSED_CLOCK_OUT',
+      notificationType: "MISSED_CLOCK_OUT",
       recipientUserId: user.id,
       companyId: company.id,
       metadata: { timeLogId: timeLog.id },
@@ -178,7 +208,11 @@ async function notifyMissedClockOut(employee, timeLog, company) {
 /**
  * Send daily morning report to management
  */
-async function sendMorningReport(companyId, missedClockIns, currentlyClockedIn) {
+async function sendMorningReport(
+  companyId,
+  missedClockIns,
+  currentlyClockedIn,
+) {
   const company = await prisma.company.findUnique({
     where: { id: companyId },
   });
@@ -188,8 +222,8 @@ async function sendMorningReport(companyId, missedClockIns, currentlyClockedIn) 
   const managementUsers = await prisma.user.findMany({
     where: {
       companyId,
-      role: { in: ['admin', 'superadmin', 'supervisor'] },
-      status: 'active',
+      role: { in: ["admin", "superadmin", "supervisor"] },
+      status: "active",
     },
     select: {
       id: true,
@@ -205,8 +239,8 @@ async function sendMorningReport(companyId, missedClockIns, currentlyClockedIn) 
       userId: manager.id,
       companyId,
       departmentId: null,
-      notificationCode: 'DAILY_CLOCK_IN_REPORT',
-      title: '📊 Morning Clock-In Report',
+      notificationCode: "DAILY_CLOCK_IN_REPORT",
+      title: "📊 Morning Clock-In Report",
       message: `${missedClockIns.length} employees missed clock-in. ${currentlyClockedIn.length} employees are currently clocked in.`,
       payload: {
         missedCount: missedClockIns.length,
@@ -219,24 +253,25 @@ async function sendMorningReport(companyId, missedClockIns, currentlyClockedIn) 
       await sendEmailNotification({
         to: manager.email,
         subject: `🔔 Morning Clock-In Report - ${company.name}`,
-        templateName: 'morningReport',
+        templateName: "morningReport",
         context: {
           managerName: manager.username,
           companyName: company.name,
-          reportDate: new Date().toLocaleDateString('en-US', { 
-            weekday: 'long', 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
+          reportDate: new Date().toLocaleDateString("en-US", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
           }),
           missedClockIns,
           currentlyClockedIn,
           missedCount: missedClockIns.length,
           clockedInCount: currentlyClockedIn.length,
-          showAllClear: missedClockIns.length === 0 && currentlyClockedIn.length === 0, // ✅ KEY FIX
+          showAllClear:
+            missedClockIns.length === 0 && currentlyClockedIn.length === 0, // ✅ KEY FIX
           appUrl: process.env.CLIENT_URL,
         },
-        notificationType: 'DAILY_CLOCK_IN_REPORT',
+        notificationType: "DAILY_CLOCK_IN_REPORT",
         recipientUserId: manager.id,
         companyId,
         metadata: {
@@ -253,7 +288,12 @@ async function sendMorningReport(companyId, missedClockIns, currentlyClockedIn) 
 /**
  * Send daily evening report to management
  */
-async function sendEveningReport(companyId, missedClockOuts, stillClockedIn, options = {}) {
+async function sendEveningReport(
+  companyId,
+  missedClockOuts,
+  stillClockedIn,
+  options = {},
+) {
   const { testEmail } = options;
 
   const company = await prisma.company.findUnique({
@@ -266,8 +306,8 @@ async function sendEveningReport(companyId, missedClockOuts, stillClockedIn, opt
   const managementUsers = await prisma.user.findMany({
     where: {
       companyId,
-      role: { in: ['admin', 'superadmin', 'supervisor'] },
-      status: 'active',
+      role: { in: ["admin", "superadmin", "supervisor"] },
+      status: "active",
     },
     select: {
       id: true,
@@ -280,11 +320,11 @@ async function sendEveningReport(companyId, missedClockOuts, stillClockedIn, opt
   const emailContext = (manager) => ({
     managerName: manager.username,
     companyName: company.name,
-    reportDate: new Date().toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+    reportDate: new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
     }),
     missedClockOuts,
     stillClockedIn,
@@ -301,8 +341,8 @@ async function sendEveningReport(companyId, missedClockOuts, stillClockedIn, opt
         userId: manager.id,
         companyId,
         departmentId: null,
-        notificationCode: 'DAILY_CLOCK_OUT_REPORT',
-        title: 'Evening Clock-Out Report',
+        notificationCode: "DAILY_CLOCK_OUT_REPORT",
+        title: "Evening Clock-Out Report",
         message: `${missedClockOuts.length} employees missed clock-out. ${stillClockedIn.length} employees are still clocked in.`,
         payload: {
           missedCount: missedClockOuts.length,
@@ -322,9 +362,9 @@ async function sendEveningReport(companyId, missedClockOuts, stillClockedIn, opt
       subject: testEmail
         ? `[TEST] Evening Clock-Out Report - ${company.name}`
         : `Evening Clock-Out Report - ${company.name}`,
-      templateName: 'eveningReport',
+      templateName: "eveningReport",
       context: emailContext(manager),
-      notificationType: 'DAILY_CLOCK_OUT_REPORT',
+      notificationType: "DAILY_CLOCK_OUT_REPORT",
       recipientUserId: manager.id,
       companyId,
       metadata: {
@@ -351,8 +391,8 @@ async function notifyAutoClockOut({ user, timeLog }) {
     userId: user.id,
     companyId: user.companyId,
     departmentId: user.departmentId,
-    notificationCode: 'AUTO_CLOCK_OUT',
-    title: '⏰ Automatic Clock-Out',
+    notificationCode: "AUTO_CLOCK_OUT",
+    title: "⏰ Automatic Clock-Out",
     message: `You were automatically clocked out after working ${timeLog.hoursWorked} hours (13-hour limit reached).`,
     payload: {
       timeLogId: timeLog.id,
@@ -364,8 +404,8 @@ async function notifyAutoClockOut({ user, timeLog }) {
 
   // 2. Socket.IO real-time notification
   const io = getIO();
-  io.to(user.id).emit('autoClockOut', {
-    type: 'autoClockOut',
+  io.to(user.id).emit("autoClockOut", {
+    type: "autoClockOut",
     message: `You were automatically clocked out after 13 hours of work.`,
     data: {
       timeLogId: timeLog.id,
@@ -379,25 +419,25 @@ async function notifyAutoClockOut({ user, timeLog }) {
   if (user.email) {
     await sendEmailNotification({
       to: user.email,
-      subject: '⏰ Automatic Clock-Out - 13 Hour Limit Reached',
-      templateName: 'autoClockOut',
+      subject: "⏰ Automatic Clock-Out - 13 Hour Limit Reached",
+      templateName: "autoClockOut",
       context: {
         employeeName:
-          `${user.profile?.firstName || ''} ${user.profile?.lastName || ''}`.trim() ||
+          `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() ||
           user.username,
-        clockInTime: new Date(timeLog.timeIn).toLocaleString('en-US', {
-          dateStyle: 'medium',
-          timeStyle: 'short',
+        clockInTime: new Date(timeLog.timeIn).toLocaleString("en-US", {
+          dateStyle: "medium",
+          timeStyle: "short",
         }),
-        clockOutTime: new Date(timeLog.timeOut).toLocaleString('en-US', {
-          dateStyle: 'medium',
-          timeStyle: 'short',
+        clockOutTime: new Date(timeLog.timeOut).toLocaleString("en-US", {
+          dateStyle: "medium",
+          timeStyle: "short",
         }),
         hoursWorked: timeLog.hoursWorked,
-        companyName: company?.name || 'BizBuddy',
+        companyName: company?.name || "BizBuddy",
         appUrl: process.env.CLIENT_URL,
       },
-      notificationType: 'AUTO_CLOCK_OUT',
+      notificationType: "AUTO_CLOCK_OUT",
       recipientUserId: user.id,
       companyId: user.companyId,
       metadata: {
