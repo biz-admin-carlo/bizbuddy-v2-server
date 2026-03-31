@@ -231,7 +231,7 @@ const timeOut = async (req, res) => {
     if (!activeLog)
       return res.status(400).json({ message: "No active time log found." });
 
-    const { localTimestamp, deviceInfo, location, punchType } = req.body;
+    const { localTimestamp, deviceInfo, location, punchType, autoLunchApplied, autoLunchMinutes } = req.body;
     const actualTimeOut = localTimestamp ? new Date(localTimestamp) : new Date();
 
     const locCheck = await verifyLocationRestriction(
@@ -257,6 +257,10 @@ const timeOut = async (req, res) => {
 
     if (punchType && VALID_PUNCH_TYPES.includes(punchType)) {
       updateData.punchType = punchType;
+    }
+
+    if (autoLunchApplied === true && Number.isInteger(autoLunchMinutes) && autoLunchMinutes > 0) {
+      updateData.autoLunchDeductionMinutes = autoLunchMinutes;
     }
 
     const updatedTimeLog = await prisma.timeLog.update({

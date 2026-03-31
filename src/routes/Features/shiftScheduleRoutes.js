@@ -10,10 +10,12 @@ const {
   getShiftScheduleById,
   updateShiftSchedule,
   deleteShiftSchedule,
+  applyScheduleToEmployee,
 } = require("@controllers/Features/shiftScheduleController");
 
 router.post("/create", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), createShiftSchedule);
 router.get("/", authenticate, authorizeRoles("admin", "supervisor", "superadmin", "employee"), getShiftSchedules);
+router.post("/:scheduleId/apply-to-employee", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), applyScheduleToEmployee);
 router.get("/:id", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), getShiftScheduleById);
 router.put("/:id", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), updateShiftSchedule);
 router.delete("/:id", authenticate, authorizeRoles("admin", "supervisor", "superadmin"), deleteShiftSchedule);

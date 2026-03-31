@@ -231,6 +231,40 @@ const createEmployee = async (req, res) => {
       },
     });
     
+    // Send welcome email (non-blocking)
+    try {
+      const company = await prisma.company.findUnique({
+        where: { id: targetCompanyId },
+        select: { name: true },
+      });
+      const html = renderWelcome({
+        firstName: firstName.trim(),
+        companyName: company?.name || "BizBuddy",
+        email: cleanedEmail,
+        password,
+      });
+      await sendMail({
+        to: cleanedEmail,
+        subject: "Welcome to BizBuddy — your account is live",
+        html,
+        text: `Hi ${firstName.trim()}, your BizBuddy account is ready.\nEmail: ${cleanedEmail}\nPassword: ${password}`,
+      });
+      await prisma.emailNotificationLog.create({
+        data: {
+          notificationType: "WELCOME_EMAIL",
+          subject: "Welcome to BizBuddy — your account is live",
+          body: JSON.stringify({ firstName: firstName.trim(), companyName: company?.name || "BizBuddy" }),
+          recipientEmail: cleanedEmail,
+          recipientUserId: newEmployee.id,
+          companyId: targetCompanyId,
+          status: "sent",
+        },
+      });
+      console.log(`[createEmployee] Welcome email sent to ${cleanedEmail}`);
+    } catch (emailErr) {
+      console.error("[createEmployee] Failed to send welcome email:", emailErr);
+    }
+
     return res.status(201).json({ data: newEmployee, message: "Employee created successfully." });
   } catch (error) {
     console.error("Error in createEmployee:", error);
@@ -440,6 +474,7 @@ const deleteEmployee = async (req, res) => {
     if (employee.id === req.user.id) {
       return res.status(400).json({ error: "You cannot delete your own account." });
     }
+    await prisma.userShift.deleteMany({ where: { userId: id } });
     await prisma.user.delete({ where: { id } });
     return res.status(200).json({ message: "Employee deleted successfully." });
   } catch (error) {

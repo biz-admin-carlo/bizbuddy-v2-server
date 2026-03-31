@@ -154,7 +154,7 @@ const getDepartmentById = async (req, res) => {
 const updateDepartment = async (req, res) => {
   try {
     const departmentId = req.params.id;
-    let { name, supervisorId, paidBreak } = req.body;
+    let { name, supervisorId, paidBreak, autoLunchDurationMinutes, autoLunchAfterHours } = req.body;
     const companyId = req.user.companyId;
 
     if (!departmentId) {
@@ -210,7 +210,23 @@ const updateDepartment = async (req, res) => {
     }
     
     if (paidBreak !== undefined) {
-      updateData.paidBreak = Boolean(paidBreak); // Ensure boolean value
+      updateData.paidBreak = Boolean(paidBreak);
+    }
+
+    if (autoLunchDurationMinutes !== undefined && autoLunchDurationMinutes !== null) {
+      const val = Number(autoLunchDurationMinutes);
+      if (!Number.isInteger(val) || val < 1) {
+        return res.status(400).json({ error: "autoLunchDurationMinutes must be an integer >= 1." });
+      }
+      updateData.autoLunchDurationMinutes = val;
+    }
+
+    if (autoLunchAfterHours !== undefined && autoLunchAfterHours !== null) {
+      const val = parseFloat(autoLunchAfterHours);
+      if (isNaN(val) || val < 0.5) {
+        return res.status(400).json({ error: "autoLunchAfterHours must be a number >= 0.5." });
+      }
+      updateData.autoLunchAfterHours = val;
     }
 
     const updatedDepartment = await prisma.department.update({

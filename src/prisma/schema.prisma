@@ -393,6 +393,7 @@ model User {
   createdCutoffPeriods     CutoffPeriod[]
   approvedTimeLogs         TimeLogApproval[]
   requestLogs              RequestLog[]
+  feedbacks                Feedback[]
   tokenVersion  Int  @default(0)
 
   @@unique([companyId, email])
@@ -502,6 +503,8 @@ model Company {
   checkTemplate     String?   @default("default")
   checkPositions    Json?
 
+  driverAideThresholdMinutes Int? @default(45)
+
 
 
   clockInGracePeriod       Int       @default(30)  // minutes after scheduled start
@@ -512,11 +515,35 @@ model Company {
   morningReportTime        String    @default("10:00") // HH:mm format
   eveningReportTime        String    @default("18:00") // HH:mm format
   requestLogs     RequestLog[]
-  
-  emailNotificationLogs EmailNotificationLog[]
-  cutoffPeriods           CutoffPeriod[]          
-  departmentCutoffSettings DepartmentCutoffSettings[] 
 
+  emailNotificationLogs EmailNotificationLog[]
+  cutoffPeriods           CutoffPeriod[]
+  departmentCutoffSettings DepartmentCutoffSettings[]
+  feedbacks       Feedback[]
+
+}
+
+model Feedback {
+  id               String    @id @default(cuid())
+  logNumber        Int       @unique @default(autoincrement())
+  companyId        String
+  userId           String?
+  category         String    // "bug" | "suggestion" | "question" | "other"
+  title            String
+  description      String
+  page             String?
+  submittedAt      DateTime?
+  status           String    @default("open") // "open" | "in_progress" | "resolved"
+  userAgent        String?
+  screenResolution String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([userId])
 }
 
 model Department {
@@ -528,9 +555,11 @@ model Department {
   updatedAt               DateTime                 @default(now()) @updatedAt @db.Timestamptz(6)
   paidBreak               Boolean                  @default(false)
   breakDuration           Int?
-  coffeeBreakMaxCount     Int                      @default(0)     
-  coffeeBreakMinutes      Int                      @default(0)     
-  coffeeBreakPaid         Boolean                  @default(false) 
+  coffeeBreakMaxCount     Int                      @default(0)
+  coffeeBreakMinutes      Int                      @default(0)
+  coffeeBreakPaid         Boolean                  @default(false)
+  autoLunchDurationMinutes Int?                    @default(60)
+  autoLunchAfterHours      Float?                  @default(4.0)
   
   // Relations
   accountDeletionRequests AccountDeletionRequest[]
@@ -768,7 +797,9 @@ model TimeLog {
 
   autoClockOut    Boolean   @default(false)
   autoClockOutAt  DateTime?
-  
+
+  autoLunchDeductionMinutes Int?
+
   @@index([isApproved])
   @@index([timeIn, isApproved])
   @@index([userId, isApproved])
