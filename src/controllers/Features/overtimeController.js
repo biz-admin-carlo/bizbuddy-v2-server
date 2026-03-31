@@ -402,6 +402,117 @@ const detectSmartOvertime = async (req, res) => {
     const { id: userId, role, companyId } = req.user;
     const isAdmin = ["admin", "superadmin", "hr"].includes(role.toLowerCase());
 
+    const { otBasis, threshold, periodStart, periodEnd } = req.query;
+
+    // ─── NEW: OT-config-aware detection ─────────────────────────────────────
+    if (otBasis) {
+      const thresholdMins = parseFloat(threshold || 8) * 60;
+
+      // Build date window
+      let fromDate, toDate;
+      toDate = new Date();
+
+      if (otBasis === "cutoff") {
+        if (periodStart && periodEnd) {
+          fromDate = new Date(periodStart);
+          toDate = new Date(periodEnd);
+          toDate.setHours(23, 59, 59, 999);
+        } else {
+          // No cutoff window provided and no open period to fall back to
+          return res.status(200).json({
+            message: "Smart overtime detection complete.",
+            meta: { count: 0 },
+            data: [],
+          });
+        }
+      } else if (otBasis === "weekly") {
+        const now = new Date();
+        const daysFromMonday = now.getDay() === 0 ? 6 : now.getDay() - 1;
+        fromDate = new Date(now);
+        fromDate.setDate(now.getDate() - daysFromMonday);
+        fromDate.setHours(0, 0, 0, 0);
+      } else {
+        // daily — last 30 days
+        fromDate = new Date();
+        fromDate.setDate(toDate.getDate() - 30);
+      }
+
+      const whereClause = isAdmin ? { user: { companyId } } : { userId };
+      whereClause.timeIn = { gte: fromDate, lte: toDate };
+      whereClause.timeOut = { not: null };
+
+      const timeLogs = await prisma.timeLog.findMany({
+        where: whereClause,
+        include: {
+          user: { include: { profile: true, department: true } },
+        },
+        orderBy: { timeIn: "asc" },
+      });
+
+      if (!timeLogs.length) {
+        return res.status(200).json({
+          message: "No timelogs found for analysis.",
+          meta: { count: 0 },
+          data: [],
+        });
+      }
+
+      const buildEntry = (log, elapsedMins, overtimeMins, type) => ({
+        timeLogId: log.id,
+        userId: log.userId,
+        employeeName: `${log.user.profile?.firstName || ""} ${log.user.profile?.lastName || ""}`.trim(),
+        department: log.user.department?.name || "—",
+        date: log.timeIn.toISOString().slice(0, 10),
+        actualStart: log.timeIn,
+        actualEnd: log.timeOut,
+        elapsedMins: +elapsedMins.toFixed(2),
+        overtimeMins: +overtimeMins.toFixed(2),
+        overtimeHours: +(overtimeMins / 60).toFixed(2),
+        type,
+        detectedAt: new Date().toISOString(),
+      });
+
+      const results = [];
+
+      if (otBasis === "daily") {
+        for (const log of timeLogs) {
+          const elapsedMins = (new Date(log.timeOut) - new Date(log.timeIn)) / 60000;
+          if (elapsedMins <= thresholdMins) continue;
+          results.push(buildEntry(log, elapsedMins, elapsedMins - thresholdMins, "Daily"));
+        }
+      } else {
+        // weekly or cutoff — cumulative per user
+        const byUser = new Map();
+        for (const log of timeLogs) {
+          if (!byUser.has(log.userId)) byUser.set(log.userId, []);
+          byUser.get(log.userId).push(log);
+        }
+
+        const type = otBasis === "weekly" ? "Weekly" : "Cutoff";
+
+        for (const userLogs of byUser.values()) {
+          let accumulated = 0;
+          for (const log of userLogs) {
+            const elapsedMins = (new Date(log.timeOut) - new Date(log.timeIn)) / 60000;
+            const prev = accumulated;
+            accumulated += elapsedMins;
+            if (accumulated <= thresholdMins) continue;
+            const overtimeMins = accumulated - Math.max(prev, thresholdMins);
+            results.push(buildEntry(log, elapsedMins, overtimeMins, type));
+          }
+        }
+      }
+
+      return res.status(200).json({
+        message: "Smart overtime detection complete.",
+        meta: { count: results.length },
+        data: results,
+      });
+    }
+    // ─── END NEW ─────────────────────────────────────────────────────────────
+
+    // Legacy: scheduled-vs-actual detection (no otBasis param)
+
     // Default date window: last 30 days
     const toDate = new Date();
     const fromDate = new Date();
@@ -497,7 +608,6 @@ const detectSmartOvertime = async (req, res) => {
         overtimeMins = Math.max(0, elapsedMins - schedDurationMins);
       } else {
         // No scheduled shift - treat full duration as potential OT
-        console.log("HELOO");
         type = "Unscheduled";
         overtimeMins = elapsedMins;
       }
@@ -528,7 +638,7 @@ const detectSmartOvertime = async (req, res) => {
         detectedAt: new Date().toISOString(),
       });
     }
-    console.log(results);
+
     // 5️⃣ Return detections
     return res.status(200).json({
       message: "Smart overtime detection complete.",

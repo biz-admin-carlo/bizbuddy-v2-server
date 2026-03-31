@@ -260,10 +260,8 @@ const getCompanyScheduleStats = async (req, res) => {
     const activeSchedules = await prisma.shiftSchedule.count({
       where: {
         companyId,
-        OR: [
-          { endDate: { equals: null } },
-          { endDate: { gte: now } },
-        ],
+        isActive: true,
+        endDate: { gte: now },
       },
     });
 

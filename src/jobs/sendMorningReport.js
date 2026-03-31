@@ -25,9 +25,9 @@ async function sendMorningReportJob() {
 
     for (const company of companies) {
       console.log(`\n🏢 Processing company: ${company.name}`);
+      const timezone = company.timeZone || 'America/Los_Angeles';
       console.log(`   Timezone: ${timezone}`);
       console.log(`   Morning report time: ${company.morningReportTime}`);
-      const timezone = company.timeZone || 'America/Los_Angeles';
       const now = moment().tz(timezone);
       const todayStart = now.clone().startOf('day');
       const todayEnd = now.clone().endOf('day');

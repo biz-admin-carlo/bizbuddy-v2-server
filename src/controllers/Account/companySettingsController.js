@@ -19,6 +19,7 @@ exports.getSettings = async (req, res) => {
         currency: true,
         language: true,
         timeZone: true,
+        driverAideThresholdMinutes: true,
       },
     });
     const formatted = {
@@ -50,10 +51,12 @@ exports.updateSettings = async (req, res) => {
       dailyOtThresholdHours,
       weeklyOtThresholdHours,
       cutoffOtThresholdHours,
+      otBasis,
       country,
       currency,
       language,
       timeZone,
+      driverAideThresholdMinutes,
     } = req.body;
 
     const VALID_OT_BASES = ["daily", "weekly", "cutoff"];
@@ -94,6 +97,13 @@ exports.updateSettings = async (req, res) => {
         country,
         currency,
         language,
+        ...(driverAideThresholdMinutes !== undefined &&
+          driverAideThresholdMinutes !== null && {
+            driverAideThresholdMinutes:
+              Number.isInteger(driverAideThresholdMinutes) && driverAideThresholdMinutes > 0
+                ? driverAideThresholdMinutes
+                : undefined,
+          }),
       },
       select: {
         id: true,
@@ -108,6 +118,7 @@ exports.updateSettings = async (req, res) => {
         currency: true,
         language: true,
         timeZone: true,
+        driverAideThresholdMinutes: true,
       },
     });
     

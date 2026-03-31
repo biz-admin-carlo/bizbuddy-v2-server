@@ -307,11 +307,20 @@ const createShiftSchedule = async (req, res) => {
 const getShiftSchedules = async (req, res) => {
   try {
     const { companyId } = req.user;
-    const { isActive } = req.query;
+    const { isActive, departmentId, status } = req.query;
 
     const where = { companyId };
-    if (isActive !== undefined) {
+
+    if (status === "active") {
+      where.isActive = true;
+      where.endDate = { gte: new Date() };
+    } else if (isActive !== undefined) {
       where.isActive = isActive === "true";
+    }
+
+    if (departmentId) {
+      where.assignmentType = "department";
+      where.targetId = departmentId;
     }
 
     const schedules = await prisma.shiftSchedule.findMany({
@@ -334,6 +343,95 @@ const getShiftSchedules = async (req, res) => {
     });
   } catch (error) {
     console.error("Error getting schedules:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * POST /api/shiftschedules/:scheduleId/apply-to-employee
+ * Applies an existing recurring schedule to a single employee (skip-on-conflict).
+ */
+const applyScheduleToEmployee = async (req, res) => {
+  try {
+    const { scheduleId } = req.params;
+    const { employeeId } = req.body;
+    const { companyId } = req.user;
+
+    if (!employeeId) {
+      return res.status(400).json({ message: "employeeId is required" });
+    }
+
+    const schedule = await prisma.shiftSchedule.findFirst({
+      where: { id: scheduleId, companyId },
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+    if (!schedule.isActive) {
+      return res.status(400).json({ message: "Schedule is not active" });
+    }
+    if (new Date(schedule.endDate) < new Date()) {
+      return res.status(400).json({ message: "Schedule has expired" });
+    }
+
+    const employee = await prisma.user.findFirst({
+      where: { id: employeeId, companyId },
+    });
+    if (!employee) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const dates = generateScheduleDates(schedule.daysOfWeek, schedule.startDate, schedule.endDate);
+
+    if (dates.length === 0) {
+      return res.status(200).json({
+        message: "No dates to apply",
+        data: { created: 0, skipped: 0 },
+      });
+    }
+
+    // Find any existing UserShifts for this employee on these dates (any shift)
+    const existingShifts = await prisma.userShift.findMany({
+      where: {
+        userId: employeeId,
+        assignedDate: { in: dates.map(d => new Date(d)) },
+      },
+      select: { assignedDate: true },
+    });
+
+    const existingDates = new Set(
+      existingShifts.map(s => s.assignedDate.toISOString().split("T")[0])
+    );
+
+    const toCreate = [];
+    let skipped = 0;
+
+    for (const date of dates) {
+      if (existingDates.has(date)) {
+        skipped++;
+        continue;
+      }
+      toCreate.push({
+        userId: employeeId,
+        shiftId: schedule.shiftId,
+        assignedDate: new Date(date),
+        status: "upcoming",
+        scheduleId: schedule.id,
+        createdFrom: "schedule",
+      });
+    }
+
+    if (toCreate.length > 0) {
+      await prisma.userShift.createMany({ data: toCreate, skipDuplicates: true });
+    }
+
+    return res.status(200).json({
+      message: "Schedule applied successfully",
+      data: { created: toCreate.length, skipped },
+    });
+  } catch (error) {
+    console.error("Error applying schedule to employee:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -610,4 +708,5 @@ module.exports = {
   getShiftScheduleById,
   updateShiftSchedule,
   deleteShiftSchedule,
+  applyScheduleToEmployee,
 };
