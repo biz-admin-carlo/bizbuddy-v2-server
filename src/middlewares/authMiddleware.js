@@ -33,6 +33,12 @@ async function authenticateToken(req, res, next) {
       companyId: user.companyId,
     };
 
+    // Allow superadmin to act on behalf of a specific company
+    // by passing the x-company-id header (set by the client company switcher)
+    if (user.role === "superadmin" && req.headers["x-company-id"]) {
+      req.user.companyId = req.headers["x-company-id"];
+    }
+
     next();
   } catch (error) {
     console.error("Authentication Error:", error);

@@ -62,8 +62,8 @@ const getUserProfile = async (req, res) => {
       return res.status(401).json({ message: "Invalid token." });
     }
     const { userId, companyId } = decoded;
-    if (!userId || !companyId) {
-      return res.status(400).json({ message: "Token missing userId or companyId." });
+    if (!userId) {
+      return res.status(400).json({ message: "Token missing userId." });
     }
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -89,7 +89,7 @@ const getUserProfile = async (req, res) => {
     }
     let latestSubscription =
       user.Subscription && user.Subscription.length > 0 ? user.Subscription[0] : null;
-    if (!latestSubscription) {
+    if (!latestSubscription && companyId) {
       const companyWithSub = await prisma.company.findUnique({
         where: { id: companyId },
         include: {
@@ -131,16 +131,16 @@ const signIn = async (req, res) => {
     // Support both legacy GET (query params) and new POST (request body)
     const { email, password, companyId } = { ...req.query, ...req.body };
 
-    if (!email || !password || !companyId) {
+    if (!email || !password) {
       return res.status(400).json({
-        message: "Email, password, and companyId are required.",
+        message: "Email and password are required.",
       });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
 
     const user = await prisma.user.findFirst({
-      where: { email: normalizedEmail, companyId },
+      where: { email: normalizedEmail, companyId: companyId || null },
       include: { company: true },
     });
 
