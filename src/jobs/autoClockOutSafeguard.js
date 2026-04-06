@@ -8,9 +8,9 @@ const { notifyAutoClockOut } = require("../services/notificationService");
  *
  * Runs every 10 minutes.
  *
- * TRIGGER:  Active session has been open for 20+ hours from timeIn.
+ * TRIGGER:  Active session has been open for 5+ hours from timeIn.
  * TIMEOUT:  Set to the employee's scheduled shift end for that day —
- *           NOT to the 20-hour mark and NOT to the time the cron fires.
+ *           NOT to the 5-hour mark and NOT to the time the cron fires.
  * FALLBACK: If no shift is assigned for that day, timeOut is set to
  *           timeIn + company.defaultShiftHours.
  *
@@ -18,21 +18,21 @@ const { notifyAutoClockOut } = require("../services/notificationService");
  * The resulting record is flagged for mandatory SV review.
  */
 
-const TWENTY_HOURS_IN_MS = 20 * 60 * 60 * 1000;
+const FIVE_HOURS_IN_MS = 5 * 60 * 60 * 1000;
 
 async function autoClockOutSafeguard() {
   try {
-    console.log("\n🔔 [AUTO CLOCK-OUT SAFEGUARD] Starting 20-hour check...");
+    console.log("\n🔔 [AUTO CLOCK-OUT SAFEGUARD] Starting 5-hour check...");
 
-    const twentyHoursAgo = new Date(Date.now() - TWENTY_HOURS_IN_MS);
+    const fiveHoursAgo = new Date(Date.now() - FIVE_HOURS_IN_MS);
 
-    // ── 1. Fetch all active sessions that have exceeded 20 hours ─────────────
-    const activeLogsOver20Hours = await prisma.timeLog.findMany({
+    // ── 1. Fetch all active sessions that have exceeded 5 hours ──────────────
+    const activeLogsOver5Hours = await prisma.timeLog.findMany({
       where: {
         status:       true,
         autoClockOut: false,
         timeIn: {
-          lte: twentyHoursAgo,
+          lte: fiveHoursAgo,
         },
       },
       include: {
@@ -50,20 +50,20 @@ async function autoClockOutSafeguard() {
       },
     });
 
-    if (activeLogsOver20Hours.length === 0) {
-      console.log("   ✅ No sessions over 20 hours. All good!");
+    if (activeLogsOver5Hours.length === 0) {
+      console.log("   ✅ No sessions over 5 hours. All good!");
       return;
     }
 
     console.log(
-      `   ⚠️  Found ${activeLogsOver20Hours.length} session(s) exceeding 20 hours`
+      `   ⚠️  Found ${activeLogsOver5Hours.length} session(s) exceeding 5 hours`
     );
 
     const cronFiredAt = new Date(); // diagnostic timestamp — NOT used as timeOut
     let successCount = 0;
     let errorCount   = 0;
 
-    for (const log of activeLogsOver20Hours) {
+    for (const log of activeLogsOver5Hours) {
       try {
         // ── 2. Look up the employee's UserShift for the clock-in date ────────
         const logDate      = new Date(log.timeIn);
