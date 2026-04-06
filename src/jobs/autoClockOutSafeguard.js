@@ -8,7 +8,8 @@ const { notifyAutoClockOut } = require("../services/notificationService");
  *
  * Runs every 10 minutes.
  *
- * TRIGGER:  Active session has been open for 5+ hours from timeIn.
+ * TRIGGER:  Active session is still open 5+ hours past the employee's
+ *           scheduled shift end time for that day.
  * TIMEOUT:  Set to the employee's scheduled shift end for that day —
  *           NOT to the 5-hour mark and NOT to the time the cron fires.
  * FALLBACK: If no shift is assigned for that day, timeOut is set to
@@ -24,16 +25,11 @@ async function autoClockOutSafeguard() {
   try {
     console.log("\n🔔 [AUTO CLOCK-OUT SAFEGUARD] Starting 5-hour check...");
 
-    const fiveHoursAgo = new Date(Date.now() - FIVE_HOURS_IN_MS);
-
-    // ── 1. Fetch all active sessions that have exceeded 5 hours ──────────────
+    // ── 1. Fetch all active sessions ──────────────────────────────────────────
     const activeLogsOver5Hours = await prisma.timeLog.findMany({
       where: {
         status:       true,
         autoClockOut: false,
-        timeIn: {
-          lte: fiveHoursAgo,
-        },
       },
       include: {
         user: {
@@ -121,7 +117,12 @@ async function autoClockOutSafeguard() {
           timeOutSource = `default shift hours fallback (${defaultHours}h)`;
         }
 
-        // ── 4. Build the update payload ───────────────────────────────────────
+        // ── 4. Skip if not yet 5 hours past the resolved shift end ───────────
+        if (Date.now() < resolvedTimeOut.getTime() + FIVE_HOURS_IN_MS) {
+          continue;
+        }
+
+        // ── 5. Build the update payload ───────────────────────────────────────
         const updatedData = {
           timeOut:       resolvedTimeOut, // ← scheduled end, not cron time
           status:        false,
@@ -146,13 +147,13 @@ async function autoClockOutSafeguard() {
           };
         }
 
-        // ── 5. Persist ────────────────────────────────────────────────────────
+        // ── 6. Persist ────────────────────────────────────────────────────────
         await prisma.timeLog.update({
           where: { id: log.id },
           data:  updatedData,
         });
 
-        // ── 6. Notify ─────────────────────────────────────────────────────────
+        // ── 7. Notify ─────────────────────────────────────────────────────────
         const hoursWorked = (
           (resolvedTimeOut - new Date(log.timeIn)) / (1000 * 60 * 60)
         ).toFixed(2);
