@@ -378,7 +378,7 @@ async function sendEveningReport(
 }
 
 /**
- * Notify employee about automatic clock-out after 13 hours
+ * Notify employee about automatic clock-out after 5 hours
  */
 async function notifyAutoClockOut({ user, timeLog }) {
   const companyId = user.companyId;
@@ -393,7 +393,7 @@ async function notifyAutoClockOut({ user, timeLog }) {
     departmentId: user.departmentId,
     notificationCode: "AUTO_CLOCK_OUT",
     title: "⏰ Automatic Clock-Out",
-    message: `You were automatically clocked out after working ${timeLog.hoursWorked} hours (13-hour limit reached).`,
+    message: `You were automatically clocked out after working ${timeLog.hoursWorked} hours (5-hour limit reached).`,
     payload: {
       timeLogId: timeLog.id,
       timeIn: timeLog.timeIn,
@@ -406,7 +406,7 @@ async function notifyAutoClockOut({ user, timeLog }) {
   const io = getIO();
   io.to(user.id).emit("autoClockOut", {
     type: "autoClockOut",
-    message: `You were automatically clocked out after 13 hours of work.`,
+    message: `You were automatically clocked out after 5 hours of work.`,
     data: {
       timeLogId: timeLog.id,
       timeIn: timeLog.timeIn,
@@ -419,7 +419,7 @@ async function notifyAutoClockOut({ user, timeLog }) {
   if (user.email) {
     await sendEmailNotification({
       to: user.email,
-      subject: "⏰ Automatic Clock-Out - 13 Hour Limit Reached",
+      subject: "⏰ Automatic Clock-Out - 5 Hour Limit Reached",
       templateName: "autoClockOut",
       context: {
         employeeName:

@@ -521,6 +521,15 @@ model Company {
   departmentCutoffSettings DepartmentCutoffSettings[]
   feedbacks       Feedback[]
 
+  // Leave accrual configuration
+  accrualEnabled       Boolean @default(false)
+  leaveYearStartMonth  Int     @default(1)   // 1 = January, 4 = April, etc.
+  newEmployeeCatchUp   Boolean @default(false)
+
+  // Multi/secondary leave approver
+  multiApprovalEnabled Boolean @default(false)
+  secondaryApproverId  String?
+
 }
 
 model Feedback {
@@ -946,9 +955,12 @@ model Leave {
   leaveType        String
   startDate        DateTime @db.Timestamptz(6)
   endDate          DateTime @db.Timestamptz(6)
-  status           String   @default("pending")
-  leaveReason      String?
-  approverComments String?
+  status                    String   @default("pending")
+  isPaid                    Boolean  @default(true)
+  leaveReason               String?
+  approverComments          String?
+  secondaryApproverId       String?
+  secondaryApproverComments String?
   createdAt        DateTime @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime @default(now()) @updatedAt @db.Timestamptz(6)
   approver         User?    @relation("approver", fields: [approverId], references: [id])
