@@ -117,8 +117,15 @@ async function autoClockOutSafeguard() {
           timeOutSource = `default shift hours fallback (${defaultHours}h)`;
         }
 
-        // ── 4. Skip if not yet 5 hours past the resolved shift end ───────────
-        if (Date.now() < resolvedTimeOut.getTime() + FIVE_HOURS_IN_MS) {
+        // ── 4. Skip unless BOTH conditions are met:
+        //       a) now is 5+ hours past the resolved shift end (overdue session)
+        //       b) employee has actually been clocked in for 5+ hours
+        //      Without (b), late clock-ins get swept up and backdated to shift
+        //      end with only minutes of work recorded.
+        const fiveHoursPastShiftEnd = resolvedTimeOut.getTime() + FIVE_HOURS_IN_MS;
+        const fiveHoursPastClockIn  = new Date(log.timeIn).getTime() + FIVE_HOURS_IN_MS;
+
+        if (Date.now() < fiveHoursPastShiftEnd || Date.now() < fiveHoursPastClockIn) {
           continue;
         }
 
