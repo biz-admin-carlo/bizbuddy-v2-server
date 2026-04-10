@@ -27,7 +27,9 @@ function normalizeTimezone(preferredTz, fallbackTz) {
 function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
   const dateOnly = dateKeyInTz(referenceDate, tz);
   const timeStr = timeStrFromDbTime(timeLikeDate);
-  return moment.tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz).toDate();
+  return moment
+    .tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz)
+    .toDate();
 }
 
 async function processClockOutReminders() {
@@ -73,7 +75,9 @@ async function processClockOutReminders() {
         for (const us of candidates) {
           const companyTz = await getCompanyTimezone(us.shift?.companyId);
           const tz = normalizeTimezone(us.shift?.timeZone, companyTz);
-          if (dateKeyInTz(us.assignedDate, tz) === dateKeyInTz(log.timeIn, tz)) {
+          if (
+            dateKeyInTz(us.assignedDate, tz) === dateKeyInTz(log.timeIn, tz)
+          ) {
             userShift = us;
             break;
           }
@@ -82,8 +86,12 @@ async function processClockOutReminders() {
         if (!userShift) {
           candidates.sort(
             (a, b) =>
-              Math.abs(new Date(a.assignedDate).getTime() - log.timeIn.getTime()) -
-              Math.abs(new Date(b.assignedDate).getTime() - log.timeIn.getTime())
+              Math.abs(
+                new Date(a.assignedDate).getTime() - log.timeIn.getTime(),
+              ) -
+              Math.abs(
+                new Date(b.assignedDate).getTime() - log.timeIn.getTime(),
+              ),
           );
           userShift = candidates[0];
         }
@@ -98,12 +106,12 @@ async function processClockOutReminders() {
       const shiftStart = combineDateWithTimeTz(
         referenceDate,
         userShift.shift.startTime,
-        tz
+        tz,
       );
       let shiftEnd = combineDateWithTimeTz(
         referenceDate,
         userShift.shift.endTime,
-        tz
+        tz,
       );
 
       // Handle shifts that cross midnight (end on the next calendar day)
@@ -114,9 +122,9 @@ async function processClockOutReminders() {
       const minutesToEnd = (shiftEnd.getTime() - now.getTime()) / 60000;
       if (minutesToEnd <= 0) continue; // already past end
 
-      // Trigger reminder if we are roughly 30 minutes before end.
+      // Trigger reminder if we are roughly 10 minutes before end.
       // Use a small window so a once-per-minute cron won't miss it.
-      if (minutesToEnd <= 30 && minutesToEnd > 29) {
+      if (minutesToEnd <= 10 && minutesToEnd > 9) {
         const marker = `clockoutReminder:${log.id}`;
         const existing = await prisma.userActivity.findFirst({
           where: { userId: log.userId, activityDescription: marker },
@@ -129,7 +137,7 @@ async function processClockOutReminders() {
           shiftEnd: shiftEnd.toISOString(),
           minutesRemaining: Math.round(minutesToEnd),
           message:
-            "Your shift ends in 30 minutes. Please remember to clock out.",
+            "Your shift ends in 10 minutes. Please remember to clock out.",
         });
 
         // Send Firebase Cloud Messaging push if available
@@ -141,7 +149,7 @@ async function processClockOutReminders() {
               token,
               notification: {
                 title: "Shift ending soon",
-                body: "Your shift ends in 30 minutes. Please remember to clock out.",
+                body: "Your shift ends in 10 minutes. Please remember to clock out.",
               },
               data: {
                 timeLogId: String(log.id),
