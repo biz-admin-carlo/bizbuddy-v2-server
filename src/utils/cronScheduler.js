@@ -26,11 +26,13 @@ function initializeCronJobs() {
   });
   console.log('✅ Missed clock-out checker: Every 5 minutes');
 
-  // Job 3: Auto clock-out after 20 hours - every 10 minutes
-  cron.schedule('*/10 * * * *', async () => {
-    await autoClockOutSafeguard();
-  });
-  console.log('✅ Auto 20-hour clock-out safeguard: Every 10 minutes');
+  // Job 3: Auto clock-out safeguard — TEMPORARILY DISABLED
+  // Disabled on 2026-04-09 pending timezone fix verification (v2.7.3).
+  // Re-enable once shift endTime timezone handling is confirmed correct in prod.
+  // cron.schedule('*/10 * * * *', async () => {
+  //   await autoClockOutSafeguard();
+  // });
+  console.log('⏸️  Auto clock-out safeguard: DISABLED (pending v2.7.3 timezone verification)');
 
   // Job 4: Send morning report at 10:00 AM daily
   cron.schedule('0 10 * * *', async () => {
