@@ -77,7 +77,10 @@ const doRequest = (urlString, payload, redirectCount = 0) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         doRequest(res.headers.location, payload, redirectCount + 1);
       } else if (res.statusCode < 200 || res.statusCode >= 300) {
-        console.error(`[feedback] Webhook rejected — status ${res.statusCode}`);
+        const preview = body.replace(/<[^>]+>/g, "").trim().slice(0, 120);
+        console.error(`[feedback] Webhook rejected — ${res.statusCode}${preview ? `: ${preview}` : ""}`);
+      } else {
+        console.log(`[feedback] Webhook delivered — ${res.statusCode}`);
       }
     });
   });
@@ -156,6 +159,9 @@ exports.submitFeedback = async (req, res) => {
         submittedAt:     submittedAt ? new Date(submittedAt) : null,
         userAgent:       userAgent   || req.headers["user-agent"] || null,
         screenResolution: screenResolution || null,
+        browser,
+        os,
+        device,
       },
     });
 

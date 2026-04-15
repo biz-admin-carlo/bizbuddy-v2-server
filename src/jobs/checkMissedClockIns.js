@@ -105,6 +105,17 @@ async function checkMissedClockIns() {
           });
 
           if (!clockIn) {
+            // Skip if employee is on an approved leave covering today
+            const onLeave = await prisma.leave.findFirst({
+              where: {
+                userId:    userShift.userId,
+                status:    "approved",
+                startDate: { lte: now.toDate() },
+                endDate:   { gte: now.toDate() },
+              },
+            });
+            if (onLeave) continue;
+
             // Employee missed clock-in!
             console.log(`⚠️  Missed clock-in: ${userShift.user.username} (${userShift.shift.shiftName})`);
 

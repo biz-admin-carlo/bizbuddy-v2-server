@@ -1,0 +1,2 @@
+ALTER TABLE "EmploymentDetail"
+ADD COLUMN "isDriver" BOOLEAN NOT NULL DEFAULT false;

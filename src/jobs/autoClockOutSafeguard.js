@@ -1,5 +1,6 @@
-// src/utils/autoClockOutSafeguard.js
+// src/jobs/autoClockOutSafeguard.js
 
+const moment = require("moment-timezone");
 const { prisma } = require("@config/connection");
 const { notifyAutoClockOut } = require("../services/notificationService");
 
@@ -11,7 +12,9 @@ const { notifyAutoClockOut } = require("../services/notificationService");
  * TRIGGER:  Active session is still open 5+ hours past the employee's
  *           scheduled shift end time for that day.
  * TIMEOUT:  Set to the employee's scheduled shift end for that day —
- *           NOT to the 5-hour mark and NOT to the time the cron fires.
+ *           resolved in the shift's timezone (or company timezone as fallback)
+ *           so that shift times stored as plain clock-time values (db.Time)
+ *           are interpreted correctly regardless of server timezone.
  * FALLBACK: If no shift is assigned for that day, timeOut is set to
  *           timeIn + company.defaultShiftHours.
  *
@@ -20,6 +23,47 @@ const { notifyAutoClockOut } = require("../services/notificationService");
  */
 
 const FIVE_HOURS_IN_MS = 5 * 60 * 60 * 1000;
+
+// ── Timezone helpers (mirrors clockInReminderWorker pattern) ─────────────────
+
+/**
+ * Extracts the raw HH:mm:ss string from a Prisma @db.Time value.
+ * Prisma returns Time columns as a Date anchored to the UTC epoch
+ * (1970-01-01THH:mm:ssZ), so getUTCHours/Minutes gives the stored clock time.
+ */
+function timeStrFromDbTime(timeLikeDate) {
+  const t = new Date(timeLikeDate);
+  const hh = String(t.getUTCHours()).padStart(2, "0");
+  const mm = String(t.getUTCMinutes()).padStart(2, "0");
+  const ss = String(t.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+/**
+ * Picks the best valid IANA timezone string from the candidates.
+ * Falls back to "Asia/Manila" (default company timezone).
+ */
+function normalizeTimezone(preferredTz, fallbackTz) {
+  const tz = preferredTz || fallbackTz || "America/Los_Angeles";
+  if (moment.tz.zone(tz)) return tz;
+  if (fallbackTz && moment.tz.zone(fallbackTz)) return fallbackTz;
+  return "America/Los_Angeles";
+}
+
+/**
+ * Combines a reference date (to get the calendar date) with a @db.Time value,
+ * interpreted in the given IANA timezone. Returns a proper UTC Date.
+ *
+ * Example: referenceDate = Apr 9 clock-in, timeLikeDate = 14:45 (stored),
+ *          tz = "Asia/Manila" → 2026-04-09 14:45:00 PHT → UTC Date
+ */
+function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
+  const dateOnly = moment(referenceDate).tz(tz).format("YYYY-MM-DD");
+  const timeStr  = timeStrFromDbTime(timeLikeDate);
+  return moment.tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz).toDate();
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 async function autoClockOutSafeguard() {
   try {
@@ -39,6 +83,7 @@ async function autoClockOutSafeguard() {
             company: {
               select: {
                 defaultShiftHours: true,
+                timeZone:          true,
               },
             },
           },
@@ -91,22 +136,20 @@ async function autoClockOutSafeguard() {
         let timeOutSource;
 
         if (userShift?.shift?.endTime) {
-          // Use the scheduled shift end time, anchored to the log's date
-          const shiftEnd    = new Date(userShift.shift.endTime);
-          resolvedTimeOut   = new Date(log.timeIn);
-          resolvedTimeOut.setHours(
-            shiftEnd.getUTCHours(),
-            shiftEnd.getUTCMinutes(),
-            0,
-            0
+          // Resolve shift end in the shift's timezone (falls back to company tz)
+          const tz = normalizeTimezone(
+            userShift.shift.timeZone,
+            log.user.company?.timeZone
           );
 
-          // If shift end is before shift start it crosses midnight — add a day
+          resolvedTimeOut = combineDateWithTimeTz(log.timeIn, userShift.shift.endTime, tz);
+
+          // If shift end resolves to before clock-in, it crosses midnight — add a day
           if (resolvedTimeOut <= new Date(log.timeIn)) {
-            resolvedTimeOut.setDate(resolvedTimeOut.getDate() + 1);
+            resolvedTimeOut = moment(resolvedTimeOut).add(1, "day").toDate();
           }
 
-          timeOutSource = `scheduled shift end (${userShift.shift.shiftName})`;
+          timeOutSource = `scheduled shift end (${userShift.shift.shiftName}, tz: ${tz})`;
         } else {
           // Fallback: timeIn + company defaultShiftHours
           const defaultHours =
@@ -131,10 +174,10 @@ async function autoClockOutSafeguard() {
 
         // ── 5. Build the update payload ───────────────────────────────────────
         const updatedData = {
-          timeOut:       resolvedTimeOut, // ← scheduled end, not cron time
-          status:        false,
-          autoClockOut:  true,
-          autoClockOutAt: cronFiredAt,   // ← when cron fired, diagnostic only
+          timeOut:        resolvedTimeOut, // ← scheduled end in correct tz, not cron time
+          status:         false,
+          autoClockOut:   true,
+          autoClockOutAt: cronFiredAt,     // ← when cron fired, diagnostic only
         };
 
         // Close any active coffee breaks at cron fire time

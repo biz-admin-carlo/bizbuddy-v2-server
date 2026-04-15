@@ -3,142 +3,244 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Evening Clock-Out Report</title>
+  <title>Evening Attendance Report</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      color: #333;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    .wrapper {
+      max-width: 680px;
+      margin: 40px auto;
+      background: #ffffff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .header {
+      background: #1a1a2e;
+      padding: 24px 32px;
+    }
+    .header h1 {
+      margin: 0;
+      color: #ffffff;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .header p {
+      margin: 4px 0 0 0;
+      color: #aaa;
+      font-size: 12px;
+    }
+    .body {
+      padding: 32px;
+    }
+    .body p {
+      margin: 0 0 16px 0;
+      color: #444;
+    }
+    .all-clear {
+      background: #f6fef9;
+      border: 1px solid #b7e4c7;
+      border-radius: 3px;
+      padding: 20px 24px;
+      margin: 16px 0 24px 0;
+      color: #1a6e3a;
+      font-size: 14px;
+    }
+    .all-clear strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+    .summary-row {
+      display: flex;
+      gap: 16px;
+      margin: 0 0 32px 0;
+    }
+    .summary-card {
+      flex: 1;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      padding: 16px 20px;
+      text-align: center;
+    }
+    .summary-card .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .summary-card .value {
+      font-size: 32px;
+      font-weight: 700;
+      color: #1a1a2e;
+      line-height: 1;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 8px;
+      margin: 0 0 16px 0;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0 0 32px 0;
+      font-size: 13px;
+    }
+    .data-table th {
+      text-align: left;
+      padding: 8px 12px;
+      background: #f5f5f5;
+      color: #555;
+      font-weight: 600;
+      border-bottom: 1px solid #ddd;
+    }
+    .data-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #eee;
+      color: #333;
+    }
+    .data-table tr:last-child td {
+      border-bottom: none;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 2px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-overdue {
+      background: #fdecea;
+      color: #c0392b;
+    }
+    .badge-active {
+      background: #fef9ec;
+      color: #a07000;
+    }
+    .cta {
+      display: inline-block;
+      padding: 10px 20px;
+      background: #1a1a2e;
+      color: #ffffff;
+      text-decoration: none;
+      border-radius: 3px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .footer {
+      padding: 16px 32px;
+      background: #f9f9f9;
+      border-top: 1px solid #eee;
+      font-size: 11px;
+      color: #999;
+    }
+  </style>
 </head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333333; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5;">
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <h1>Evening Attendance Report</h1>
+      <p>{{companyName}} &mdash; {{reportDate}}</p>
+    </div>
 
-  <!-- Header -->
-  <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0;">
-    <tr>
-      <td style="background-color: #FF7A29; border-radius: 10px 10px 0 0; padding: 32px 30px; text-align: center;">
-        <h1 style="margin: 0 0 8px 0; font-size: 26px; font-weight: 700; color: #ffffff; letter-spacing: -0.3px;">Evening Clock-Out Report</h1>
-        <p style="margin: 0; font-size: 15px; color: #ffffff; font-weight: 500;">{{companyName}} &nbsp;&bull;&nbsp; {{reportDate}}</p>
-      </td>
-    </tr>
-  </table>
+    <div class="body">
+      <p>Good evening, <strong>{{managerName}}</strong>. Here is your end-of-day attendance summary.</p>
 
-  <!-- Body -->
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 10px 10px;">
-    <tr>
-      <td style="padding: 32px 30px;">
+      {{#if showAllClear}}
 
-        <p style="margin: 0 0 6px 0; font-size: 16px; color: #333333;">Good evening, <strong>{{managerName}}</strong>!</p>
-        <p style="margin: 0 0 28px 0; font-size: 15px; color: #555555;">Here is your end-of-day attendance summary.</p>
+      <div class="all-clear">
+        <strong>All Clear</strong>
+        All employees have completed their shifts and clocked out for the day.
+      </div>
 
-        {{#if showAllClear}}
+      {{else}}
 
-        <!-- All Clear -->
-        <table width="100%" cellpadding="0" cellspacing="0" style="margin: 10px 0 28px 0;">
+      <div class="summary-row">
+        <div class="summary-card">
+          <div class="label">Missed Clock-Outs</div>
+          <div class="value">{{missedCount}}</div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Still Clocked In</div>
+          <div class="value">{{stillClockedInCount}}</div>
+        </div>
+      </div>
+
+      {{#if missedClockOuts.length}}
+      <div class="section-title">Missed Clock-Outs</div>
+      <table class="data-table">
+        <thead>
           <tr>
-            <td style="background-color: #F0FBF4; border: 2px solid #28A745; border-radius: 8px; padding: 28px; text-align: center;">
-              <p style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700; color: #155724;">All Employees Clocked Out</p>
-              <p style="margin: 0; font-size: 15px; color: #155724;">All employees have completed their shifts and clocked out for the day.</p>
-            </td>
+            <th>Employee</th>
+            <th>Department</th>
+            <th>Clock-In</th>
+            <th>Expected Out</th>
+            <th>Status</th>
           </tr>
-        </table>
-
-        {{else}}
-
-        <!-- Summary Cards -->
-        <table width="100%" cellpadding="0" cellspacing="10" style="margin: 0 0 28px 0;">
+        </thead>
+        <tbody>
+          {{#each missedClockOuts}}
           <tr>
-            <td width="50%" style="background-color: #FFF3CD; border: 2px solid #FF7A29; border-radius: 8px; padding: 20px; text-align: center;">
-              <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 700; color: #888888; text-transform: uppercase; letter-spacing: 0.5px;">Missed Clock-Outs</p>
-              <p style="margin: 0; font-size: 38px; font-weight: 700; color: #FF5757; line-height: 1;">{{missedCount}}</p>
-            </td>
-            <td width="50%" style="background-color: #FFF5ED; border: 2px solid #FF8C42; border-radius: 8px; padding: 20px; text-align: center;">
-              <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 700; color: #888888; text-transform: uppercase; letter-spacing: 0.5px;">Still Clocked In</p>
-              <p style="margin: 0; font-size: 38px; font-weight: 700; color: #FF5757; line-height: 1;">{{stillClockedInCount}}</p>
-            </td>
+            <td><strong>{{this.employeeName}}</strong></td>
+            <td>{{this.department}}</td>
+            <td>{{this.clockInTime}}</td>
+            <td>{{this.expectedClockOut}}</td>
+            <td><span class="badge badge-overdue">{{this.minutesOverdue}} min overdue</span></td>
           </tr>
-        </table>
+          {{/each}}
+        </tbody>
+      </table>
+      {{/if}}
 
-        {{#if missedClockOuts.length}}
+      {{#if stillClockedIn.length}}
+      <div class="section-title">Still Clocked In</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Department</th>
+            <th>Clock-In Time</th>
+            <th>Hours</th>
+            <th>Expected End</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{#each stillClockedIn}}
+          <tr>
+            <td><strong>{{this.employeeName}}</strong></td>
+            <td>{{this.department}}</td>
+            <td>{{this.clockInTime}}</td>
+            <td><span class="badge badge-active">{{this.hoursWorked}} hrs</span></td>
+            <td>{{#if this.expectedClockOut}}{{this.expectedClockOut}}{{else}}&mdash;{{/if}}</td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+      {{/if}}
 
-        <!-- Missed Clock-Outs Section -->
-        <h2 style="margin: 0 0 6px 0; font-size: 17px; font-weight: 700; color: #CC2200; border-bottom: 2px solid #FF7A29; padding-bottom: 10px;">Employees Who Missed Clock-Out</h2>
-        <p style="margin: 0 0 14px 0; font-size: 13px; color: #666666;">These employees should have clocked out but have not. Please follow up.</p>
+      {{/if}}
 
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-bottom: 28px;">
-          <thead>
-            <tr style="background-color: #FF7A29;">
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Employee</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Department</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Clock-In</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Expected Out</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {{#each missedClockOuts}}
-            <tr style="border-bottom: 1px solid #FFE0CC;">
-              <td style="padding: 11px 12px; font-size: 14px; color: #222222; font-weight: 600;">{{this.employeeName}}</td>
-              <td style="padding: 11px 12px; font-size: 14px; color: #444444;">{{this.department}}</td>
-              <td style="padding: 11px 12px; font-size: 14px; color: #444444;">{{this.clockInTime}}</td>
-              <td style="padding: 11px 12px; font-size: 14px; color: #444444;">{{this.expectedClockOut}}</td>
-              <td style="padding: 11px 12px;">
-                <span style="display: inline-block; padding: 3px 9px; border-radius: 4px; font-size: 12px; font-weight: 600; background-color: #FFE0CC; color: #CC2200;">
-                  {{this.minutesOverdue}} min overdue
-                </span>
-              </td>
-            </tr>
-            {{/each}}
-          </tbody>
-        </table>
+      <a href="{{appUrl}}/dashboard/company-panel/punch-logs" class="cta">View Full Report</a>
+    </div>
 
-        {{/if}}
-
-        {{#if stillClockedIn.length}}
-
-        <!-- Still Clocked In Section -->
-        <h2 style="margin: 0 0 6px 0; font-size: 17px; font-weight: 700; color: #333333; border-bottom: 2px solid #FF7A29; padding-bottom: 10px;">Active — Still Clocked In</h2>
-        <p style="margin: 0 0 14px 0; font-size: 13px; color: #666666;">Employees currently working. May include normal shifts or scheduled overnight work.</p>
-
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-bottom: 28px;">
-          <thead>
-            <tr style="background-color: #FF7A29;">
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Employee</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Department</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Clock-In Time</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Hours Worked</th>
-              <th style="padding: 11px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #ffffff; border-bottom: 2px solid #e05a00;">Expected End</th>
-            </tr>
-          </thead>
-          <tbody>
-            {{#each stillClockedIn}}
-            <tr style="border-bottom: 1px solid #FFE0CC;">
-              <td style="padding: 11px 12px; font-size: 14px; color: #222222; font-weight: 600;">{{this.employeeName}}</td>
-              <td style="padding: 11px 12px; font-size: 14px; color: #444444;">{{this.department}}</td>
-              <td style="padding: 11px 12px; font-size: 14px; color: #444444;">{{this.clockInTime}}</td>
-              <td style="padding: 11px 12px;">
-                <span style="display: inline-block; padding: 3px 9px; border-radius: 4px; font-size: 12px; font-weight: 600; background-color: #FFF5ED; color: #FF7A29; border: 1px solid #FF8C42;">
-                  {{this.hoursWorked}} hrs
-                </span>
-              </td>
-              <td style="padding: 11px 12px; font-size: 14px; color: #444444;">{{#if this.expectedClockOut}}{{this.expectedClockOut}}{{else}}&mdash;{{/if}}</td>
-            </tr>
-            {{/each}}
-          </tbody>
-        </table>
-
-        {{/if}}
-        {{/if}}
-
-
-
-      </td>
-    </tr>
-  </table>
-
-  <!-- Footer -->
-  <table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 16px;">
-    <tr>
-      <td style="text-align: center; padding: 18px 20px; background-color: #f8f9fa; border-radius: 8px;">
-        <p style="margin: 0 0 4px 0; font-size: 12px; color: #888888;">This is an automated daily report from {{companyName}}.</p>
-        <p style="margin: 0; font-size: 12px; color: #aaaaaa;">&copy; 2026 BizBuddy. All rights reserved.</p>
-      </td>
-    </tr>
-  </table>
-
+    <div class="footer">
+      This is an automated daily report from BizBuddy. Please do not reply to this email.
+      &copy; {{currentYear}} BizBuddy LLC.
+    </div>
+  </div>
 </body>
 </html>

@@ -19,6 +19,7 @@ const { prisma } = require("@config/connection");
 const moment = require("moment-timezone");
 const { randomUUID } = require("crypto");
 const { createNotification } = require("@services/notificationService");
+const { computeTimeLogSummary } = require("@services/timeLogComputeService");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -1453,6 +1454,13 @@ const updateSingleApproval = async (req, res) => {
       },
     });
 
+    // Recompute derived fields against the approved (snapped) times
+    try {
+      await computeTimeLogSummary(timeLog.id);
+    } catch (computeErr) {
+      console.error(`[updateSingleApproval] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
+    }
+
     const updated = await prisma.timeLogApproval.update({
       where: { id: approvalId },
       data: {
@@ -1630,6 +1638,13 @@ const bulkUpdateApprovals = async (req, res) => {
             isApproved:      true,
           },
         });
+
+        // Recompute derived fields against the approved (snapped) times
+        try {
+          await computeTimeLogSummary(timeLog.id);
+        } catch (computeErr) {
+          console.error(`[bulkUpdateApprovals] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
+        }
 
         await prisma.timeLogApproval.update({
           where: { id: approval.id },
@@ -1813,6 +1828,13 @@ const resolveConflict = async (req, res) => {
         isApproved:      true,
       },
     });
+
+    // Recompute derived fields against the conflict-resolved times
+    try {
+      await computeTimeLogSummary(timeLog.id);
+    } catch (computeErr) {
+      console.error(`[resolveConflict] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
+    }
 
     // Approve the punch
     await prisma.timeLogApproval.update({
