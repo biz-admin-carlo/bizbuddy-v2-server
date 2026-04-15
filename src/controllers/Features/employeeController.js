@@ -77,9 +77,10 @@ const getAllEmployees = async (req, res) => {
             workLocation: true,
             probationEndDate: true,
             timeZone: true,
-            supervisor: {  
-              select: { 
-                id: true, 
+            isDriver: true,
+            supervisor: {
+              select: {
+                id: true,
                 email: true,
                 profile: {
                   select: {
@@ -278,8 +279,8 @@ const updateEmployee = async (req, res) => {
     let { 
       email, password, role, firstName, lastName, phone, status, 
       companyId, departmentId, hireDate, employeeId, 
-      jobTitle, employmentStatus, exemptStatus, employmentType, 
-      workLocation, probationEndDate, timeZone 
+      jobTitle, employmentStatus, exemptStatus, employmentType,
+      workLocation, probationEndDate, timeZone, isDriver,
     } = req.body;
 
     const employee = await prisma.user.findFirst({
@@ -410,6 +411,9 @@ const updateEmployee = async (req, res) => {
     }
     if (timeZone !== undefined) {
       employmentDetailData.timeZone = timeZone ? timeZone.trim() : null;
+    }
+    if (typeof isDriver === "boolean") {
+      employmentDetailData.isDriver = isDriver;
     }
 
     const updatedEmployee = await prisma.user.update({

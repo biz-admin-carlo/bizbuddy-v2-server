@@ -19,12 +19,24 @@ exports.getSettings = async (req, res) => {
         currency: true,
         language: true,
         timeZone: true,
-        driverAideThresholdMinutes: true,
+        driverAideThresholdMinutes:   true,
+        shiftAssignmentWindowMinutes: true,
+        autoClockOutWarningHours:     true,
+        autoClockOutGraceHours:       true,
+        autoClockOutNotifyEmails:     true,
+        multiApprovalEnabled:         true,
+        secondaryApproverId:          true,
       },
     });
     const formatted = {
       ...company,
-      timezone: company.timeZone, 
+      timezone:                 company.timeZone,
+      autoClockOutWarningHours: company.autoClockOutWarningHours != null
+        ? parseFloat(company.autoClockOutWarningHours) : 0.5,
+      autoClockOutGraceHours:   company.autoClockOutGraceHours != null
+        ? parseFloat(company.autoClockOutGraceHours)   : 1.0,
+      autoClockOutNotifyEmails: Array.isArray(company.autoClockOutNotifyEmails)
+        ? company.autoClockOutNotifyEmails : [],
     };
 
     delete formatted.timeZone;
@@ -57,6 +69,12 @@ exports.updateSettings = async (req, res) => {
       language,
       timeZone,
       driverAideThresholdMinutes,
+      shiftAssignmentWindowMinutes,
+      autoClockOutWarningHours,
+      autoClockOutGraceHours,
+      autoClockOutNotifyEmails,
+      multiApprovalEnabled,
+      secondaryApproverId,
     } = req.body;
 
     const VALID_OT_BASES = ["daily", "weekly", "cutoff"];
@@ -104,6 +122,32 @@ exports.updateSettings = async (req, res) => {
                 ? driverAideThresholdMinutes
                 : undefined,
           }),
+        ...(shiftAssignmentWindowMinutes !== undefined && {
+          shiftAssignmentWindowMinutes:
+            Number.isInteger(shiftAssignmentWindowMinutes) && shiftAssignmentWindowMinutes >= 0
+              ? shiftAssignmentWindowMinutes
+              : 30,
+        }),
+        // ── Auto clock-out config ─────────────────────────────────────────────
+        ...(autoClockOutWarningHours !== undefined && {
+          autoClockOutWarningHours:
+            autoClockOutWarningHours === null ? 0.5 : Math.max(0, Number(autoClockOutWarningHours) || 0.5),
+        }),
+        ...(autoClockOutGraceHours !== undefined && {
+          autoClockOutGraceHours:
+            autoClockOutGraceHours === null ? 1.0 : Math.max(0, Number(autoClockOutGraceHours) || 1.0),
+        }),
+        ...(autoClockOutNotifyEmails !== undefined && {
+          autoClockOutNotifyEmails: Array.isArray(autoClockOutNotifyEmails)
+            ? autoClockOutNotifyEmails.filter((e) => typeof e === "string" && e.trim())
+            : [],
+        }),
+        ...(multiApprovalEnabled !== undefined && {
+          multiApprovalEnabled: Boolean(multiApprovalEnabled),
+        }),
+        ...(secondaryApproverId !== undefined && {
+          secondaryApproverId: secondaryApproverId || null,
+        }),
       },
       select: {
         id: true,
@@ -118,11 +162,16 @@ exports.updateSettings = async (req, res) => {
         currency: true,
         language: true,
         timeZone: true,
-        driverAideThresholdMinutes: true,
+        driverAideThresholdMinutes:   true,
+        shiftAssignmentWindowMinutes: true,
+        autoClockOutWarningHours:     true,
+        autoClockOutGraceHours:       true,
+        autoClockOutNotifyEmails:     true,
+        multiApprovalEnabled:         true,
+        secondaryApproverId:          true,
       },
     });
-    
-    console.log('[✅ Company settings updated]', updated);
+
     res.json({ data: updated });
   } catch (e) {
     console.error("updateSettings error:", e);

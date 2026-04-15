@@ -448,6 +448,123 @@ async function notifyAutoClockOut({ user, timeLog }) {
   }
 }
 
+/**
+ * Warn an employee that their shift is ending soon and they should clock out.
+ * Sends a push notification + email.
+ *
+ * @param {object} opts
+ * @param {object} opts.user         — { id, email, companyId, departmentId, profile, company }
+ * @param {Date}   opts.scheduledEnd — resolved shift end time
+ * @param {object} opts.timeLog      — { id, timeIn }
+ */
+async function notifyClockOutWarning({ user, scheduledEnd, timeLog }) {
+  const company = await prisma.company.findUnique({
+    where:  { id: user.companyId },
+    select: { name: true, timeZone: true },
+  });
+
+  const tz       = company?.timeZone || "America/Los_Angeles";
+  const endStr   = scheduledEnd
+    ? new Date(scheduledEnd).toLocaleTimeString("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit" })
+    : "your scheduled end time";
+
+  await createNotification({
+    userId:           user.id,
+    companyId:        user.companyId,
+    departmentId:     user.departmentId,
+    notificationCode: "CLOCK_OUT_WARNING",
+    title:            "Clock-Out Reminder",
+    message:          `Your shift ends at ${endStr}. Please clock out before then.`,
+    payload: {
+      timeLogId:    timeLog.id,
+      scheduledEnd: scheduledEnd?.toISOString() ?? null,
+    },
+  });
+
+  if (user.email) {
+    const clockInStr = new Date(timeLog.timeIn).toLocaleTimeString("en-US", {
+      timeZone: tz,
+      hour:     "2-digit",
+      minute:   "2-digit",
+    });
+
+    await sendEmailNotification({
+      to:             user.email,
+      subject:        "Clock-Out Reminder",
+      templateName:   "clockOutWarning",
+      context: {
+        employeeName:     `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() || user.email,
+        companyName:      company?.name || "BizBuddy",
+        scheduledEndTime: endStr,
+        clockInTime:      clockInStr,
+        appUrl:           process.env.CLIENT_URL,
+        currentYear:      new Date().getFullYear(),
+      },
+      notificationType: "CLOCK_OUT_WARNING",
+      recipientUserId:  user.id,
+      companyId:        user.companyId,
+      metadata:         { timeLogId: timeLog.id },
+    });
+  }
+}
+
+/**
+ * Notify configured supervisor email addresses that an employee was auto-clocked out.
+ * This is a plain email-only notification (no internal DB notification — supervisors
+ * may not have user accounts in the system).
+ *
+ * @param {object}   opts
+ * @param {object}   opts.user          — { id, email, username, companyId, profile, company }
+ * @param {object}   opts.timeLog       — { id, timeIn, timeOut }
+ * @param {Date}     opts.scheduledEnd  — the pre-computed shift end from LiveUser
+ * @param {string[]} opts.notifyEmails  — list of recipient email addresses
+ */
+async function notifyAutoClockOutSupervisors({ user, timeLog, scheduledEnd, notifyEmails }) {
+  if (!notifyEmails || notifyEmails.length === 0) return;
+
+  const company = await prisma.company.findUnique({
+    where:  { id: user.companyId },
+    select: { name: true, timeZone: true },
+  });
+
+  const tz           = company?.timeZone || "America/Los_Angeles";
+  const employeeName = `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() || user.username || user.email;
+
+  const fmt = (dt) =>
+    new Date(dt).toLocaleString("en-US", {
+      timeZone:   tz,
+      dateStyle:  "medium",
+      timeStyle:  "short",
+    });
+
+  const clockInStr   = fmt(timeLog.timeIn);
+  const clockOutStr  = fmt(timeLog.timeOut);
+  const scheduledStr = scheduledEnd ? fmt(scheduledEnd) : fmt(timeLog.timeOut);
+
+  await Promise.allSettled(
+    notifyEmails.map((email) =>
+      sendEmailNotification({
+        to:             email,
+        subject:        `[Auto Clock-Out] ${employeeName} — ${company?.name || "BizBuddy"}`,
+        templateName:   "autoClockOutSv",
+        context: {
+          employeeName,
+          companyName:      company?.name || "BizBuddy",
+          clockInTime:      clockInStr,
+          clockOutTime:     clockOutStr,
+          scheduledEndTime: scheduledStr,
+          appUrl:           process.env.CLIENT_URL,
+          currentYear:      new Date().getFullYear(),
+        },
+        notificationType: "AUTO_CLOCK_OUT_SV",
+        recipientUserId:  null,
+        companyId:        user.companyId,
+        metadata:         { timeLogId: timeLog.id, employeeId: user.id },
+      })
+    )
+  );
+}
+
 module.exports = {
   createNotification,
   sendEmailNotification,
@@ -456,4 +573,6 @@ module.exports = {
   sendMorningReport,
   sendEveningReport,
   notifyAutoClockOut,
+  notifyClockOutWarning,
+  notifyAutoClockOutSupervisors,
 };

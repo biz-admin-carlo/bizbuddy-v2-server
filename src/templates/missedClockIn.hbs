@@ -3,140 +3,136 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Missed Clock-In Reminder</title>
+  <title>Missed Clock-In</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      font-size: 14px;
       line-height: 1.6;
       color: #333;
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 20px;
-      background: #f5f5f5;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    .wrapper {
+      max-width: 560px;
+      margin: 40px auto;
+      background: #ffffff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      overflow: hidden;
     }
     .header {
-      background: linear-gradient(135deg, #FF8C42 0%, #FF5757 100%);
-      color: white;
-      padding: 30px;
-      border-radius: 10px 10px 0 0;
-      text-align: center;
+      background: #1a1a2e;
+      padding: 24px 32px;
     }
     .header h1 {
       margin: 0;
-      font-size: 24px;
+      color: #ffffff;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
     }
-    .content {
-      background: #ffffff;
-      padding: 30px;
-      border: 1px solid #e0e0e0;
-      border-top: none;
+    .header p {
+      margin: 4px 0 0 0;
+      color: #aaa;
+      font-size: 12px;
     }
-    .alert {
-      background: #FFF3CD;
-      border-left: 4px solid #FF8C42;
-      padding: 15px;
-      margin: 20px 0;
-      border-radius: 4px;
+    .body {
+      padding: 32px;
     }
-    .details {
-      background: #FFF5ED;
-      padding: 20px;
-      border-radius: 8px;
-      margin: 20px 0;
-      border: 1px solid #FFE0CC;
+    .body p {
+      margin: 0 0 16px 0;
+      color: #444;
     }
-    .details-row {
-      display: flex;
-      justify-content: space-between;
-      padding: 8px 0;
-      border-bottom: 1px solid #FFE0CC;
+    .notice {
+      background: #fafafa;
+      border-left: 3px solid #c0392b;
+      padding: 12px 16px;
+      margin: 0 0 24px 0;
+      font-size: 13px;
+      color: #555;
     }
-    .details-row:last-child {
+    .detail-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0 0 24px 0;
+    }
+    .detail-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #eee;
+      font-size: 13px;
+    }
+    .detail-table td:first-child {
+      color: #888;
+      width: 40%;
+    }
+    .detail-table td:last-child {
+      color: #111;
+      font-weight: 500;
+    }
+    .detail-table tr:last-child td {
       border-bottom: none;
     }
-    .label {
-      font-weight: 600;
-      color: #666;
-    }
-    .value {
-      color: #333;
-    }
-    .button {
+    .cta {
       display: inline-block;
-      padding: 14px 28px;
-      background: linear-gradient(135deg, #FF8C42 0%, #FF5757 100%);
-      color: white;
+      padding: 10px 20px;
+      background: #1a1a2e;
+      color: #ffffff;
       text-decoration: none;
-      border-radius: 6px;
-      font-weight: 600;
-      margin: 20px 0;
-      text-align: center;
+      border-radius: 3px;
+      font-size: 13px;
+      font-weight: 500;
     }
     .footer {
-      text-align: center;
-      padding: 20px;
-      color: #666;
-      font-size: 12px;
-      background: #f8f9fa;
-      border-radius: 0 0 10px 10px;
-      margin-top: 20px;
-    }
-    /* Mobile responsive */
-    @media only screen and (max-width: 600px) {
-      body { padding: 10px; }
-      .header { padding: 20px; }
-      .content { padding: 20px; }
-      .details-row { flex-direction: column; }
-      .value { margin-top: 4px; font-weight: 500; }
+      padding: 16px 32px;
+      background: #f9f9f9;
+      border-top: 1px solid #eee;
+      font-size: 11px;
+      color: #999;
     }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>⏰ Clock-In Reminder</h1>
-  </div>
-  
-  <div class="content">
-    <p>Hi <strong>{{employeeName}}</strong>,</p>
-    
-    <div class="alert">
-      <strong>⚠️ Action Required:</strong> We noticed you haven't clocked in for your scheduled shift.
+  <div class="wrapper">
+    <div class="header">
+      <h1>Missed Clock-In</h1>
+      <p>BizBuddy Attendance</p>
     </div>
-    
-    <p>Please clock in as soon as possible or contact your supervisor if you're unable to work today.</p>
-    
-    <div class="details">
-      <h3 style="margin-top: 0; color: #FF5757;">Shift Details</h3>
-      <div class="details-row">
-        <span class="label">Shift Name:</span>
-        <span class="value">{{shiftName}}</span>
+
+    <div class="body">
+      <p>Hi {{employeeName}},</p>
+
+      <div class="notice">
+        You have not clocked in for your scheduled shift. Please clock in as soon as possible or contact your supervisor if you are unable to work today.
       </div>
-      <div class="details-row">
-        <span class="label">Scheduled Start:</span>
-        <span class="value">{{scheduledStart}}</span>
-      </div>
-      <div class="details-row">
-        <span class="label">Current Time:</span>
-        <span class="value">{{currentTime}}</span>
-      </div>
-      <div class="details-row">
-        <span class="label">Department:</span>
-        <span class="value">{{department}}</span>
-      </div>
+
+      <table class="detail-table">
+        <tr>
+          <td>Shift</td>
+          <td>{{shiftName}}</td>
+        </tr>
+        <tr>
+          <td>Scheduled Start</td>
+          <td>{{scheduledStart}}</td>
+        </tr>
+        <tr>
+          <td>Current Time</td>
+          <td>{{currentTime}}</td>
+        </tr>
+        <tr>
+          <td>Department</td>
+          <td>{{department}}</td>
+        </tr>
+      </table>
+
+      <a href="{{appUrl}}" class="cta">Clock In Now</a>
     </div>
-    
-    <div style="text-align: center;">
-      <a href="{{appUrl}}" class="button">Clock In Now</a>
+
+    <div class="footer">
+      This is an automated notification from BizBuddy. Please do not reply to this email.
+      &copy; {{currentYear}} BizBuddy LLC.
     </div>
-    
-    <p style="font-size: 14px; color: #666; margin-top: 30px;">
-      If you have any questions or need assistance, please contact your supervisor or HR department.
-    </p>
-  </div>
-  
-  <div class="footer">
-    <p>This is an automated notification from BizBuddy.</p>
-    <p>© {{currentYear}} BizBuddy LLC. All rights reserved.</p>
   </div>
 </body>
 </html>

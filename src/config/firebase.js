@@ -11,10 +11,7 @@ function initFirebase() {
     process.env;
 
   if (!FIREBASE_PROJECT_ID || !FIREBASE_CLIENT_EMAIL || !FIREBASE_PRIVATE_KEY) {
-    if (!configWarned) {
-      console.warn("Firebase Admin not fully configured. Push notifications disabled.");
-      configWarned = true;
-    }
+    configWarned = true;
     return null;
   }
 
@@ -48,4 +45,8 @@ function getMessaging() {
   }
 }
 
-module.exports = { initFirebase, getMessaging };
+function isFirebaseReady() {
+  return initialized;
+}
+
+module.exports = { initFirebase, getMessaging, isFirebaseReady };

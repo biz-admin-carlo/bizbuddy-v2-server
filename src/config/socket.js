@@ -65,7 +65,6 @@ function init(server) {
     });
   });
 
-  console.log('✅ Socket.io initialized');
   return io;
 }
 

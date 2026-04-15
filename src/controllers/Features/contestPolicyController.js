@@ -1,4 +1,5 @@
 const { prisma } = require("@config/connection");
+const { computeTimeLogSummary } = require("@services/timeLogComputeService");
 
 const submitContestPolicy = async (req, res) => {
   try {
@@ -355,7 +356,14 @@ const viewContestTimeLogs = async (req, res) => {
           timeOut: contest.requestedClockOut,
         },
       });
-  
+
+      // Recompute derived fields against the contested (corrected) times
+      try {
+        await computeTimeLogSummary(contest.timeLogId);
+      } catch (computeErr) {
+        console.error(`[approveContest] computeTimeLogSummary failed for ${contest.timeLogId}:`, computeErr.message);
+      }
+
       // 4. Mark the contest itself as APPROVED
       const updated = await prisma.contestTimeLog.update({
         where: { id },

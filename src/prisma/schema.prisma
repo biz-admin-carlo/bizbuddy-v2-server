@@ -394,7 +394,8 @@ model User {
   approvedTimeLogs         TimeLogApproval[]
   requestLogs              RequestLog[]
   feedbacks                Feedback[]
-  tokenVersion  Int  @default(0)
+  tokenVersion             Int      @default(0)
+  liveUser                 LiveUser?
 
   @@unique([companyId, email])
   @@index([companyId, status])
@@ -439,6 +440,7 @@ model EmploymentDetail {
   createdAt        DateTime          @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime          @default(now()) @updatedAt @db.Timestamptz(6)
   workState        String?
+  isDriver         Boolean           @default(false)
   department       Department?       @relation("DepartmentEmploymentDetails", fields: [departmentId], references: [id])
   supervisor       User?             @relation("Supervisor", fields: [supervisorId], references: [id])
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -503,7 +505,8 @@ model Company {
   checkTemplate     String?   @default("default")
   checkPositions    Json?
 
-  driverAideThresholdMinutes Int? @default(45)
+  driverAideThresholdMinutes       Int? @default(45)
+  shiftAssignmentWindowMinutes     Int  @default(30)
 
 
 
@@ -530,6 +533,13 @@ model Company {
   multiApprovalEnabled Boolean @default(false)
   secondaryApproverId  String?
 
+  // Auto clock-out configuration
+  autoClockOutWarningHours  Decimal? @default(0.5) @db.Decimal(4, 2) // hours BEFORE scheduledEnd to warn employee
+  autoClockOutGraceHours    Decimal? @default(1.0) @db.Decimal(4, 2) // hours AFTER scheduledEnd to auto-close
+  autoClockOutNotifyEmails  Json?    @default("[]")                   // JSON string[] of SV email recipients
+
+  LiveUser LiveUser[]
+
 }
 
 model Feedback {
@@ -545,6 +555,9 @@ model Feedback {
   status           String    @default("open") // "open" | "in_progress" | "resolved"
   userAgent        String?
   screenResolution String?
+  browser          String?
+  os               String?
+  device           String?
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -809,11 +822,52 @@ model TimeLog {
 
   autoLunchDeductionMinutes Int?
 
+  // ── Derived / computed fields (Phase 1 — eager compute at clock-out) ────────
+  // All values are recomputed by computeTimeLogSummary() and must never be
+  // manually set outside of that service. Raw timeIn/timeOut are the source
+  // of truth and are never mutated after creation.
+  undertimeHours        Decimal?  @db.Decimal(5, 2)  // hours short of scheduled shift end
+  netWorkedHours        Decimal?  @db.Decimal(6, 2)  // REGULAR: gross-breaks | DA: sum of segment hours
+  lunchDeductionMinutes Int?                          // final applied lunch deduction in minutes
+  totalBreakMinutes     Int?                          // total coffee break time in minutes
+  regularSegmentHours   Decimal?  @db.Decimal(6, 2)  // Regular shift hours (schedule-bounded); null for non-DA
+  driverAmSegmentHours  Decimal?  @db.Decimal(6, 2)  // Driver AM segment hours; null for REGULAR / DRIVER_AIDE_PM
+  driverPmSegmentHours  Decimal?  @db.Decimal(6, 2)  // Driver PM segment hours; null for REGULAR / DRIVER_AIDE_AM
+  rawOtMinutes          Int?                          // OT minutes past Driver PM shift end; null for REGULAR
+  calculatedAt          DateTime?  @db.Timestamptz(6) // when derived fields were last computed
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  liveUser              LiveUser?
+
   @@index([isApproved])
   @@index([timeIn, isApproved])
   @@index([userId, isApproved])
   @@index([userId, timeIn])
   @@index([userId, timeOut])
+}
+
+// ── Live clock-in presence table ─────────────────────────────────────────────
+// One row per actively-clocked-in employee. Created at clock-in, removed at
+// self clock-out. Auto-close (cron) deletes the row after closing the TimeLog.
+// warnAt and closeAt are pre-computed at clock-in for fast indexed cron queries.
+model LiveUser {
+  id           String    @id @default(cuid())
+  userId       String    @unique               // one active session per user
+  companyId    String
+  timeLogId    String    @unique               // the open TimeLog row
+  scheduledEnd DateTime? @db.Timestamptz(6)   // resolved shift end (null = fallback used)
+  warnAt       DateTime? @db.Timestamptz(6)   // scheduledEnd − autoClockOutWarningHours
+  closeAt      DateTime? @db.Timestamptz(6)   // scheduledEnd + autoClockOutGraceHours
+  warningSent  Boolean   @default(false)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  user    User    @relation(fields: [userId],    references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  timeLog TimeLog @relation(fields: [timeLogId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([warnAt])
+  @@index([closeAt])
 }
 
 model CutoffPeriod {
@@ -955,7 +1009,7 @@ model Leave {
   leaveType        String
   startDate        DateTime @db.Timestamptz(6)
   endDate          DateTime @db.Timestamptz(6)
-  status                    String   @default("pending")
+  status                    leaveStatus @default(pending)
   isPaid                    Boolean  @default(true)
   leaveReason               String?
   approverComments          String?
@@ -1092,6 +1146,8 @@ enum NotificationCode {
   DAILY_CLOCK_IN_REPORT
   DAILY_CLOCK_OUT_REPORT
   AUTO_CLOCK_OUT
+  AUTO_CLOCK_OUT_SV
+  CLOCK_OUT_WARNING
 
   // Schedule
   SCHEDULE_ASSIGNED
@@ -1147,8 +1203,10 @@ enum userRole {
 
 enum leaveStatus {
   pending
+  pending_secondary
   approved
   rejected
+  cancelled
 }
 
 enum PresenceStatus {

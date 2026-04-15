@@ -3,6 +3,7 @@
 const { prisma } = require("@config/connection");
 const { calcRequestedHours } = require("@utils/leaveUtils");
 const { createNotification } = require("@services/notificationService");
+const { getIO } = require("@config/socket");
 
 const _format = (l) => ({
   ...l,
@@ -96,27 +97,16 @@ const submitLeaveRequest = async (req, res) => {
   if (!policy)
     return res.status(400).json({ message: "Leave policy not found for this type." });
 
-  // Check if company uses multi-approval and has a secondary approver configured
-  const company = await prisma.company.findUnique({
-    where:  { id: req.user.companyId },
-    select: { multiApprovalEnabled: true, secondaryApproverId: true },
-  });
-  const secondaryApproverId =
-    company?.multiApprovalEnabled && company?.secondaryApproverId
-      ? company.secondaryApproverId
-      : null;
-
   const data = await prisma.leave.create({
     data: {
-      userId:             req.user.id,
-      approverId:         approver.id,
-      leaveType:          policy.id,
-      startDate:          new Date(fromDate).toISOString(),
-      endDate:            new Date(toDate).toISOString(),
-      status:             "pending",
-      isPaid:             isPaid !== undefined ? Boolean(isPaid) : true,
+      userId:     req.user.id,
+      approverId: approver.id,
+      leaveType:  policy.id,
+      startDate:  new Date(fromDate).toISOString(),
+      endDate:    new Date(toDate).toISOString(),
+      status:     "pending",
+      isPaid:     isPaid !== undefined ? Boolean(isPaid) : true,
       leaveReason,
-      secondaryApproverId,
     },
   });
 
@@ -160,7 +150,7 @@ const submitLeaveRequest = async (req, res) => {
 
 const approveLeave = async (req, res) => {
   const leaveId = req.params.id;
-  const { approverComments } = req.body;
+  const { approverComments, escalateTo } = req.body;
 
   // Find leave where the caller is either the first approver (pending)
   // or the secondary approver (pending_secondary)
@@ -200,35 +190,55 @@ const approveLeave = async (req, res) => {
 
   // ── FIRST APPROVER ────────────────────────────────────────────────────────
   if (isFirstApprover) {
-    const multiEnabled = leave.secondaryApproverId !== null;
-
-    if (multiEnabled) {
-      // Step 1 of 2 — no balance deduction yet, advance to pending_secondary
-      const data = await prisma.leave.update({
-        where: { id: leaveId },
-        data:  { status: "pending_secondary", approverComments },
+    // Check if approver wants to escalate to a second approver.
+    // Requires: company.multiApprovalEnabled = true AND a valid escalateTo userId.
+    if (escalateTo) {
+      const company = await prisma.company.findUnique({
+        where:  { id: req.user.companyId },
+        select: { multiApprovalEnabled: true },
       });
 
-      // Notify secondary approver
+      if (!company?.multiApprovalEnabled)
+        return res.status(400).json({ message: "Two-step approval is not enabled for this company." });
+
+      if (escalateTo === req.user.id)
+        return res.status(400).json({ message: "Cannot escalate to yourself." });
+
+      if (escalateTo === leave.userId)
+        return res.status(400).json({ message: "Cannot escalate to the leave requester." });
+
+      const secondaryApprover = await prisma.user.findFirst({
+        where: {
+          id:        escalateTo,
+          companyId: req.user.companyId,
+          role:      { in: ["admin", "supervisor", "superadmin"] },
+          status:    "active",
+        },
+        select: { id: true, departmentId: true },
+      });
+      if (!secondaryApprover)
+        return res.status(400).json({ message: "Escalation target is not a valid active approver." });
+
+      // Step 1 of 2 — set secondaryApproverId per-request, advance to pending_secondary
+      const data = await prisma.leave.update({
+        where: { id: leaveId },
+        data:  { status: "pending_secondary", secondaryApproverId: escalateTo, approverComments },
+      });
+
       try {
-        const secondaryUser = await prisma.user.findUnique({
-          where:  { id: leave.secondaryApproverId },
-          select: { departmentId: true },
-        });
         await createNotification({
-          userId:           leave.secondaryApproverId,
+          userId:           escalateTo,
           companyId:        req.user.companyId,
-          departmentId:     secondaryUser?.departmentId || null,
+          departmentId:     secondaryApprover.departmentId || null,
           notificationCode: "LEAVE_PENDING_SECONDARY_APPROVAL",
           title:            "Leave Request Awaiting Your Approval",
           message:          `${employeeName}'s leave request from ${startDateStr} to ${endDateStr} has been approved by the first approver and is awaiting your final approval.`,
           payload:          { leaveId, startDate: leave.startDate, endDate: leave.endDate, requesterId: leave.userId },
         });
-      } catch (notifError) {
-        console.error("❌ Failed to send secondary approval notification:", notifError);
+      } catch (e) {
+        console.error("❌ Failed to send secondary approval notification:", e);
       }
 
-      // Notify employee that step 1 is done
       try {
         await createNotification({
           userId:           leave.userId,
@@ -239,14 +249,14 @@ const approveLeave = async (req, res) => {
           message:          `Your leave request from ${startDateStr} to ${endDateStr} has been approved by your supervisor and is awaiting final approval.`,
           payload:          { leaveId, startDate: leave.startDate, endDate: leave.endDate },
         });
-      } catch (notifError) {
-        console.error("❌ Failed to send first-approval employee notification:", notifError);
+      } catch (e) {
+        console.error("❌ Failed to send first-approval employee notification:", e);
       }
 
       return res.json({ data: _format(data) });
     }
 
-    // Single approver — deduct balance and fully approve
+    // No escalation — single approver, deduct balance and fully approve
     const result = await _deductBalance(leave, policy, req.user.companyId);
     if (result.error) return res.status(400).json({ message: result.message, debug: result.debug });
 
@@ -255,6 +265,7 @@ const approveLeave = async (req, res) => {
       data:  { status: "approved", approverComments },
     });
 
+    // Notify employee + emit real-time balance update
     try {
       await createNotification({
         userId:           leave.userId,
@@ -265,9 +276,13 @@ const approveLeave = async (req, res) => {
         message:          `Your leave request from ${startDateStr} to ${endDateStr} has been approved.`,
         payload:          { leaveId, startDate: leave.startDate, endDate: leave.endDate },
       });
-    } catch (notifError) {
-      console.error("❌ Failed to send leave approval notification:", notifError);
+    } catch (e) {
+      console.error("❌ Failed to send leave approval notification:", e);
     }
+
+    try {
+      getIO().to(leave.userId).emit("leaveBalanceUpdated", { leaveId, policyId: policy.id });
+    } catch (_) {}
 
     return res.json({ data: _format(data) });
   }
@@ -292,9 +307,13 @@ const approveLeave = async (req, res) => {
         message:          `Your leave request from ${startDateStr} to ${endDateStr} has been fully approved.`,
         payload:          { leaveId, startDate: leave.startDate, endDate: leave.endDate },
       });
-    } catch (notifError) {
-      console.error("❌ Failed to send final approval notification:", notifError);
+    } catch (e) {
+      console.error("❌ Failed to send final approval notification:", e);
     }
+
+    try {
+      getIO().to(leave.userId).emit("leaveBalanceUpdated", { leaveId, policyId: policy.id });
+    } catch (_) {}
 
     return res.json({ data: _format(data) });
   }
@@ -391,15 +410,23 @@ const getUserLeaves = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const getPendingLeavesForApprover = async (req, res) => {
-  // Include leaves where user is first approver (pending)
-  // OR secondary approver (pending_secondary)
+  const isManagement = ["admin", "superadmin", "supervisor"].includes(req.user.role);
+
+  // All management roles: company-wide pending leaves (view-only for those not directed at them)
+  const where = isManagement
+    ? {
+        User: { companyId: req.user.companyId },
+        status: { in: ["pending", "pending_secondary"] },
+      }
+    : {
+        OR: [
+          { approverId:          req.user.id, status: "pending"           },
+          { secondaryApproverId: req.user.id, status: "pending_secondary" },
+        ],
+      };
+
   const leaves = await prisma.leave.findMany({
-    where: {
-      OR: [
-        { approverId:          req.user.id, status: "pending"           },
-        { secondaryApproverId: req.user.id, status: "pending_secondary" },
-      ],
-    },
+    where,
     include: {
       User: {
         select: {
@@ -414,8 +441,12 @@ const getPendingLeavesForApprover = async (req, res) => {
   const formatted = await _attachPolicyNames(leaves);
   const data = formatted.map((l) => {
     const raw = leaves.find((r) => r.id === l.id);
+    const canAct =
+      (raw.status === "pending"           && raw.approverId          === req.user.id) ||
+      (raw.status === "pending_secondary" && raw.secondaryApproverId === req.user.id);
     return {
       ...l,
+      canAct,
       requester: raw?.User
         ? {
             ...raw.User,
@@ -436,19 +467,25 @@ const getLeavesForApprover = async (req, res) => {
   const { status } = req.query;
   const limit  = Math.min(parseInt(req.query.limit) || 50, 200);
   const offset = parseInt(req.query.offset) || 0;
+  const isManagement = ["admin", "superadmin", "supervisor"].includes(req.user.role);
 
   const validStatuses = ["pending", "pending_secondary", "approved", "rejected", "cancelled"];
   if (status && !validStatuses.includes(status.toLowerCase()))
     return res.status(400).json({ message: "Invalid status filter." });
 
-  // Caller can be first approver or secondary approver
-  const where = {
-    OR: [
-      { approverId:          req.user.id },
-      { secondaryApproverId: req.user.id },
-    ],
-    ...(status ? { status: status.toLowerCase() } : {}),
-  };
+  // All management roles: company-wide, all statuses (view-only unless directed at them)
+  const where = isManagement
+    ? {
+        User: { companyId: req.user.companyId },
+        ...(status ? { status: status.toLowerCase() } : {}),
+      }
+    : {
+        OR: [
+          { approverId:          req.user.id },
+          { secondaryApproverId: req.user.id },
+        ],
+        ...(status ? { status: status.toLowerCase() } : {}),
+      };
 
   const [leaves, total] = await Promise.all([
     prisma.leave.findMany({
@@ -471,8 +508,12 @@ const getLeavesForApprover = async (req, res) => {
   const formatted = await _attachPolicyNames(leaves);
   const data = formatted.map((l) => {
     const raw = leaves.find((r) => r.id === l.id);
+    const canAct =
+      (raw.status === "pending"           && raw.approverId          === req.user.id) ||
+      (raw.status === "pending_secondary" && raw.secondaryApproverId === req.user.id);
     return {
       ...l,
+      canAct,
       requester: raw?.User
         ? {
             ...raw.User,
