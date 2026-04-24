@@ -2,6 +2,107 @@
 
 const { prisma } = require("@config/connection");
 const { createNotification } = require("@services/notificationService");
+const moment = require("moment-timezone");
+
+// Derives the active cutoff period window from a seed definition
+function computeActiveCutoffPeriod(seedStartDate, durationDays, tz) {
+  const today = moment().tz(tz).startOf("day");
+  let current = moment.tz(seedStartDate, tz).startOf("day");
+  while (current.clone().add(durationDays, "days").isSameOrBefore(today)) {
+    current = current.clone().add(durationDays, "days");
+  }
+  return {
+    periodStart: current.toDate(),
+    periodEnd:   current.clone().add(durationDays - 1, "days").endOf("day").toDate(),
+  };
+}
+
+// Returns accumulated hours, already-submitted OT, and eligible hours for the period
+async function computeOtEligibility(userId, companyId) {
+  const company = await prisma.company.findUnique({
+    where:  { id: companyId },
+    select: {
+      timeZone:              true,
+      otBasis:               true,
+      dailyOtThresholdHours:  true,
+      weeklyOtThresholdHours: true,
+      cutoffOtThresholdHours: true,
+      companyCutoffSettings:  true,
+    },
+  });
+
+  const tz        = company.timeZone || "UTC";
+  const basis     = company.otBasis  || "daily";
+  let periodStart, periodEnd, threshold;
+
+  if (basis === "daily") {
+    periodStart = moment().tz(tz).startOf("day").toDate();
+    periodEnd   = moment().tz(tz).endOf("day").toDate();
+    threshold   = parseFloat(company.dailyOtThresholdHours  || 8);
+  } else if (basis === "weekly") {
+    periodStart = moment().tz(tz).startOf("isoWeek").toDate();
+    periodEnd   = moment().tz(tz).endOf("isoWeek").toDate();
+    threshold   = parseFloat(company.weeklyOtThresholdHours || 40);
+  } else {
+    // cutoff
+    if (!company.companyCutoffSettings) return null; // caller handles 400
+    const active = computeActiveCutoffPeriod(
+      company.companyCutoffSettings.seedStartDate,
+      company.companyCutoffSettings.durationDays,
+      tz
+    );
+    periodStart = active.periodStart;
+    periodEnd   = active.periodEnd;
+    threshold   = parseFloat(company.cutoffOtThresholdHours || 80);
+  }
+
+  const logs = await prisma.timeLog.findMany({
+    where: {
+      userId,
+      status:  false, // completed
+      timeIn:  { gte: periodStart, lte: periodEnd },
+      timeOut: { not: null },
+    },
+    select: {
+      id:             true,
+      timeIn:         true,
+      timeOut:        true,
+      netWorkedHours: true,
+      punchType:      true,
+    },
+    orderBy: { timeIn: "asc" },
+  });
+
+  const accumulatedHours = logs.reduce(
+    (sum, l) => sum + parseFloat(l.netWorkedHours || 0), 0
+  );
+
+  const existingOT = await prisma.overtime.findMany({
+    where: {
+      requesterId: userId,
+      status:      { in: ["pending", "approved"] },
+      createdAt:   { gte: periodStart, lte: periodEnd },
+    },
+    select: { requestedHours: true },
+  });
+  const alreadySubmittedHours = existingOT.reduce(
+    (sum, ot) => sum + parseFloat(ot.requestedHours || 0), 0
+  );
+
+  const otEligibleHours = Math.max(0, accumulatedHours - threshold - alreadySubmittedHours);
+
+  return {
+    basis,
+    threshold,
+    periodStart,
+    periodEnd,
+    accumulatedHours:      parseFloat(accumulatedHours.toFixed(2)),
+    alreadySubmittedHours: parseFloat(alreadySubmittedHours.toFixed(2)),
+    otEligibleHours:       parseFloat(otEligibleHours.toFixed(2)),
+    eligible:              otEligibleHours > 0,
+    logs,
+  };
+}
 
 function format(ot) {
   return {
@@ -49,6 +150,27 @@ const submitOvertime = async (req, res) => {
         .status(400)
         .json({ message: "requestedHours must be greater than 0." });
     }
+
+    // ── Threshold eligibility gate ────────────────────────────────────────────
+    const eligibility = await computeOtEligibility(req.user.id, req.user.companyId);
+    if (eligibility === null) {
+      return res.status(400).json({
+        message: "No cutoff period configured. Set up company cutoff settings before submitting OT.",
+      });
+    }
+    if (!eligibility.eligible) {
+      return res.status(400).json({
+        message: `Accumulated hours (${eligibility.accumulatedHours}h) have not reached the ${eligibility.basis} OT threshold (${eligibility.threshold}h).`,
+        data: { accumulatedHours: eligibility.accumulatedHours, threshold: eligibility.threshold, basis: eligibility.basis },
+      });
+    }
+    if (parseFloat(requestedHours) > eligibility.otEligibleHours) {
+      return res.status(400).json({
+        message: `Requested hours (${requestedHours}h) exceed the available OT excess (${eligibility.otEligibleHours}h).`,
+        data: { otEligibleHours: eligibility.otEligibleHours },
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Validate timeLog exists and belongs to user
     const timeLog = await prisma.timeLog.findUnique({
@@ -654,6 +776,42 @@ const detectSmartOvertime = async (req, res) => {
   }
 };
 
+const getThresholdStatus = async (req, res) => {
+  try {
+    const eligibility = await computeOtEligibility(req.user.id, req.user.companyId);
+
+    if (eligibility === null) {
+      return res.status(400).json({
+        message: "No cutoff period configured. Set up company cutoff settings first.",
+      });
+    }
+
+    return res.status(200).json({
+      data: {
+        basis:                 eligibility.basis,
+        threshold:             eligibility.threshold,
+        periodStart:           eligibility.periodStart.toISOString().slice(0, 10),
+        periodEnd:             eligibility.periodEnd.toISOString().slice(0, 10),
+        accumulatedHours:      eligibility.accumulatedHours,
+        alreadySubmittedHours: eligibility.alreadySubmittedHours,
+        otEligibleHours:       eligibility.otEligibleHours,
+        eligible:              eligibility.eligible,
+        logs: eligibility.logs.map((l) => ({
+          timeLogId:      l.id,
+          date:           l.timeIn.toISOString().slice(0, 10),
+          timeIn:         l.timeIn.toISOString(),
+          timeOut:        l.timeOut ? l.timeOut.toISOString() : null,
+          netWorkedHours: parseFloat(l.netWorkedHours || 0),
+          punchType:      l.punchType,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error("getThresholdStatus error:", err);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
 module.exports = {
   submitOvertime,
   getMyOT,
@@ -663,4 +821,5 @@ module.exports = {
   deleteOT,
   getAllOT,
   detectSmartOvertime,
+  getThresholdStatus,
 };

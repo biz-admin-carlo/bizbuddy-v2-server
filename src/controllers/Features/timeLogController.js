@@ -5,6 +5,7 @@ const { Prisma } = require("@prisma/client");
 const { getIO } = require("@config/socket");
 const { computeTimeLogSummary } = require("@services/timeLogComputeService");
 const { createLiveUser, removeLiveUser } = require("@services/liveUserService");
+const { applyAutoBreaks } = require("@services/autoBreakService");
 const moment = require("moment-timezone");
 
 function calculateDistanceKm(lat1, lon1, lat2, lon2) {
@@ -278,6 +279,16 @@ const timeOut = async (req, res) => {
     // Remove from LiveUser table (self clock-out — non-fatal)
     removeLiveUser(userId).catch(() => {});
 
+    // ── Phase 2.5: Auto-break injection ──────────────────────────────────────
+    // Injects lunch/coffee break records when company has auto-break configured
+    // and the employee did not take them manually. Non-fatal.
+    try {
+      await applyAutoBreaks(updatedTimeLog.id, userId);
+    } catch (autoBreakErr) {
+      console.error(`[timeOut] applyAutoBreaks failed for ${updatedTimeLog.id}:`, autoBreakErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ── Phase 3: Eager compute of derived fields at clock-out ─────────────────
     // Runs synchronously before response is sent so the client immediately
     // receives accurate lateHours, undertimeHours, netWorkedHours, etc.
@@ -404,6 +415,22 @@ const getUserTimeLogs = async (req, res) => {
       `,
     ]);
 
+    // ── Batch UserShift lookup — one query covers all log dates in the page ──
+    const shiftNameMap = {};
+    if (logs.length) {
+      const sorted = [...new Set(logs.map((l) => moment.tz(l.timeIn, tz).format("YYYY-MM-DD")))].sort();
+      const rangeStart = moment.tz(sorted[0],                  "YYYY-MM-DD", tz).startOf("day").toDate();
+      const rangeEnd   = moment.tz(sorted[sorted.length - 1],  "YYYY-MM-DD", tz).endOf("day").toDate();
+      const userShifts = await prisma.userShift.findMany({
+        where:  { userId, assignedDate: { gte: rangeStart, lte: rangeEnd } },
+        select: { assignedDate: true, shift: { select: { shiftName: true } } },
+      });
+      userShifts.forEach((s) => {
+        const key = s.assignedDate.toISOString().slice(0, 10);
+        shiftNameMap[key] = s.shift?.shiftName ?? null;
+      });
+    }
+
     // ── Shape response ────────────────────────────────────────────────────────
     const data = logs.map((l) => ({
       ...l,
@@ -417,6 +444,7 @@ const getUserTimeLogs = async (req, res) => {
       driverPmSegmentHours:  l.driverPmSegmentHours  != null ? parseFloat(l.driverPmSegmentHours)  : null,
       cutoffApproval:  l.approval ?? null,
       approval:        undefined,
+      shiftName:       shiftNameMap[moment.tz(l.timeIn, tz).format("YYYY-MM-DD")] ?? null,
     }));
 
     return res.status(200).json({
@@ -596,17 +624,49 @@ const getCompanyTimeLogs = async (req, res) => {
       if (to)   where.timeIn.lte = to;
     }
 
-    // ── Paginated data + total count ──────────────────────────────────────────
-    const [logs, total] = await Promise.all([
+    // ── Build summary conditions once, shared by counts + hours ─────────────
+    const summaryConditions = [Prisma.sql`u."companyId" = ${companyId}`];
+    if (from)         summaryConditions.push(Prisma.sql`t."timeIn" >= ${from}`);
+    if (to)           summaryConditions.push(Prisma.sql`t."timeIn" <= ${to}`);
+    if (employeeId)   summaryConditions.push(Prisma.sql`t."userId" = ${employeeId}`);
+    if (departmentId) summaryConditions.push(Prisma.sql`u."departmentId" = ${departmentId}`);
+    if (punchType)    summaryConditions.push(Prisma.sql`t."punchType"::text = ${punchType}`);
+
+    // ── All independent queries in one round-trip ─────────────────────────────
+    const [logs, total, [summaryRow]] = await Promise.all([
       prisma.timeLog.findMany({
         where,
         orderBy: { timeIn: "desc" },
-        include: {
+        select: {
+          id:                    true,
+          timeIn:                true,
+          timeOut:               true,
+          status:                true,
+          punchType:             true,
+          lateHours:             true,
+          undertimeHours:        true,
+          netWorkedHours:        true,
+          lunchDeductionMinutes: true,
+          totalBreakMinutes:     true,
+          regularSegmentHours:   true,
+          driverAmSegmentHours:  true,
+          driverPmSegmentHours:  true,
+          rawOtMinutes:          true,
+          coffeeBreaks:          true,
+          lunchBreak:            true,
+          deviceInfo:            true,
+          location:              true,
+          autoClockOut:          true,
+          autoClockOutAt:        true,
+          remarks:               true,
           user: {
-            include: {
-              profile:          true,
-              department:       true,
-              presence:         true,
+            select: {
+              id:         true,
+              email:      true,
+              employeeId: true,
+              profile:          { select: { firstName: true, lastName: true } },
+              department:       { select: { name: true } },
+              presence:         { select: { presenceStatus: true } },
               employmentDetail: { select: { jobTitle: true } },
             },
           },
@@ -615,19 +675,10 @@ const getCompanyTimeLogs = async (req, res) => {
               id:     true,
               status: true,
               cutoffPeriod: {
-                select: {
-                  id:          true,
-                  periodStart: true,
-                  periodEnd:   true,
-                  status:      true,
-                },
+                select: { id: true, periodStart: true, periodEnd: true, status: true },
               },
             },
           },
-          // Lean select — timeLogId is indexed so this is fast even at scale.
-          // Only the fields the punch log view needs; no nested user relations.
-          // Sorted by updatedAt desc so overtime[0] is always the most recently
-          // touched record (approved/rejected/updated) — client needs no reduce.
           overtime: {
             select: {
               id:               true,
@@ -645,42 +696,24 @@ const getCompanyTimeLogs = async (req, res) => {
         take: limit,
       }),
       prisma.timeLog.count({ where }),
-    ]);
-
-    // ── Summary — counts + totalHours across full filtered set ────────────────
-    const baseWhere = { user: { companyId } };
-    if (employeeId)   baseWhere.userId    = employeeId;
-    if (departmentId) baseWhere.user      = { companyId, departmentId };
-    if (punchType)    baseWhere.punchType = punchType;
-    if (from || to) {
-      baseWhere.timeIn = {};
-      if (from) baseWhere.timeIn.gte = from;
-      if (to)   baseWhere.timeIn.lte = to;
-    }
-
-    const hoursConditions = [
-      Prisma.sql`u."companyId" = ${companyId}`,
-      Prisma.sql`t."status" = false`,
-      Prisma.sql`t."timeOut" IS NOT NULL`,
-    ];
-    if (from)         hoursConditions.push(Prisma.sql`t."timeIn" >= ${from}`);
-    if (to)           hoursConditions.push(Prisma.sql`t."timeIn" <= ${to}`);
-    if (employeeId)   hoursConditions.push(Prisma.sql`t."userId" = ${employeeId}`);
-    if (departmentId) hoursConditions.push(Prisma.sql`u."departmentId" = ${departmentId}`);
-    if (punchType)    hoursConditions.push(Prisma.sql`t."punchType"::text = ${punchType}`);
-
-    const [activeCount, completedCount, [hoursRow]] = await Promise.all([
-      prisma.timeLog.count({ where: { ...baseWhere, status: true  } }),
-      prisma.timeLog.count({ where: { ...baseWhere, status: false } }),
       prisma.$queryRaw`
-        SELECT COALESCE(
-          SUM(EXTRACT(EPOCH FROM (t."timeOut" - t."timeIn")) / 3600), 0
-        )::float AS "totalHours"
+        SELECT
+          COUNT(*) FILTER (WHERE t."status" = true)::int  AS "activeCount",
+          COUNT(*) FILTER (WHERE t."status" = false)::int AS "completedCount",
+          COALESCE(
+            SUM(EXTRACT(EPOCH FROM (t."timeOut" - t."timeIn")) / 3600)
+              FILTER (WHERE t."status" = false AND t."timeOut" IS NOT NULL),
+            0
+          )::float AS "totalHours"
         FROM "TimeLog" t
         INNER JOIN "User" u ON t."userId" = u.id
-        WHERE ${Prisma.join(hoursConditions, " AND ")}
+        WHERE ${Prisma.join(summaryConditions, " AND ")}
       `,
     ]);
+
+    const activeCount   = Number(summaryRow.activeCount);
+    const completedCount = Number(summaryRow.completedCount);
+    const totalHours    = parseFloat(summaryRow.totalHours ?? 0);
 
     // ── shiftToday — use company timezone for day boundaries ──────────────────
     const rows = logs.map((l) => ({
@@ -722,6 +755,8 @@ const getCompanyTimeLogs = async (req, res) => {
       remarks:              l.remarks ?? [],
       presence:             l.user.presence?.presenceStatus || "unknown",
       shiftToday:           null,
+      userShift:            null,
+      userShifts:           [],
       cutoffApproval:       l.approval ?? null,
       // OT requests linked to this punch log — coerce Decimal fields
       overtime:             (l.overtime ?? []).map((ot) => ({
@@ -741,8 +776,26 @@ const getCompanyTimeLogs = async (req, res) => {
         include: { shift: true },
       });
       const shiftMap = {};
-      shiftRows.forEach((s) => { shiftMap[s.userId] = s.shift.shiftName; });
-      rows.forEach((r) => { r.shiftToday = shiftMap[r.userId] || "—"; });
+      shiftRows.forEach((s) => {
+        if (!shiftMap[s.userId]) shiftMap[s.userId] = [];
+        if (s.shift?.id && shiftMap[s.userId].some((x) => x.shift.id === s.shift.id)) return;
+        shiftMap[s.userId].push({
+          id:           s.id,
+          assignedDate: s.assignedDate.toISOString().slice(0, 10),
+          shift: {
+            id:        s.shift?.id        ?? null,
+            shiftName: s.shift?.shiftName ?? null,
+            startTime: s.shift?.startTime ?? null,
+            endTime:   s.shift?.endTime   ?? null,
+          },
+        });
+      });
+      rows.forEach((r) => {
+        const shifts = shiftMap[r.userId] ?? [];
+        r.shiftToday  = shifts.map((s) => s.shift.shiftName).filter(Boolean).join(", ") || "—";
+        r.userShifts  = shifts;
+        r.userShift   = shifts[0] ?? null;
+      });
     }
 
     return res.status(200).json({
@@ -758,7 +811,7 @@ const getCompanyTimeLogs = async (req, res) => {
         total:      activeCount + completedCount,
         active:     activeCount,
         completed:  completedCount,
-        totalHours: parseFloat((hoursRow.totalHours ?? 0).toFixed(2)),
+        totalHours: parseFloat(totalHours.toFixed(2)),
       },
     });
   } catch (err) {

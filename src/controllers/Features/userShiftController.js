@@ -16,16 +16,16 @@ const getUserShifts = async (req, res) => {
     
     const formattedShifts = userShifts.map((shift) => ({
       ...shift,
-      assignedDate: shift.assignedDate.toISOString(),
+      assignedDate: shift.assignedDate.toISOString().slice(0, 10),
       shift: {
         ...shift.shift,
         startTime: shift.shift.startTime.toISOString(),
         endTime: shift.shift.endTime.toISOString(),
       },
     }));
-    
-    return res.status(200).json({ 
-      message: "User shifts retrieved successfully.", 
+
+    return res.status(200).json({
+      message: "User shifts retrieved successfully.",
       data: formattedShifts 
     });
   } catch (error) {
@@ -139,7 +139,7 @@ const getEmployeeShifts = async (req, res) => {
 
     const formattedShifts = userShifts.map((shift) => ({
       ...shift,
-      assignedDate: shift.assignedDate.toISOString(),
+      assignedDate: shift.assignedDate.toISOString().slice(0, 10),
       shift: {
         ...shift.shift,
         startTime: shift.shift.startTime.toISOString(),
@@ -249,13 +249,13 @@ const getBulkEmployeeShifts = async (req, res) => {
       if (shiftsGrouped[shift.userId]) {
         shiftsGrouped[shift.userId].shifts.push({
           ...shift,
-          assignedDate: shift.assignedDate.toISOString(),
+          assignedDate: shift.assignedDate.toISOString().slice(0, 10),
           shift: {
             ...shift.shift,
             startTime: shift.shift.startTime.toISOString(),
             endTime: shift.shift.endTime.toISOString(),
           },
-          user: undefined, // Remove user object from response
+          user: undefined,
         });
       }
     });

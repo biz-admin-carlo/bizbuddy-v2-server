@@ -154,7 +154,24 @@ const getDepartmentById = async (req, res) => {
 const updateDepartment = async (req, res) => {
   try {
     const departmentId = req.params.id;
-    let { name, supervisorId, paidBreak, autoLunchDurationMinutes, autoLunchAfterHours } = req.body;
+    let {
+      name,
+      supervisorId,
+      paidBreak,
+      autoLunchDurationMinutes,
+      autoLunchAfterHours,
+      coffeeBreakMaxCount,
+      coffeeBreakMinutes,
+      coffeeBreakPaid,
+      autoLunchEntitled,
+      autoBreakLunchMinutes,
+      autoBreakLunchAfterHours,
+      autoBreakLunchDeductible,
+      autoCoffeeEntitled,
+      autoBreakCoffeeMinutes,
+      autoBreakCoffeeCount,
+      autoBreakCoffeeDeductible,
+    } = req.body;
     const companyId = req.user.companyId;
 
     if (!departmentId) {
@@ -227,6 +244,62 @@ const updateDepartment = async (req, res) => {
         return res.status(400).json({ error: "autoLunchAfterHours must be a number >= 0.5." });
       }
       updateData.autoLunchAfterHours = val;
+    }
+
+    if (coffeeBreakMaxCount !== undefined && coffeeBreakMaxCount !== null) {
+      const val = Number(coffeeBreakMaxCount);
+      if (!Number.isInteger(val) || val < 0 || val > 5) {
+        return res.status(400).json({ error: "coffeeBreakMaxCount must be an integer between 0 and 5." });
+      }
+      updateData.coffeeBreakMaxCount = val;
+    }
+
+    if (coffeeBreakMinutes !== undefined && coffeeBreakMinutes !== null) {
+      const val = Number(coffeeBreakMinutes);
+      if (!Number.isInteger(val) || val < 0 || val > 30) {
+        return res.status(400).json({ error: "coffeeBreakMinutes must be an integer between 0 and 30." });
+      }
+      updateData.coffeeBreakMinutes = val;
+    }
+
+    if (coffeeBreakPaid !== undefined) {
+      updateData.coffeeBreakPaid = Boolean(coffeeBreakPaid);
+    }
+
+    if (autoLunchEntitled !== undefined) {
+      updateData.autoLunchEntitled = Boolean(autoLunchEntitled);
+    }
+
+    if (autoBreakLunchMinutes !== undefined && autoBreakLunchMinutes !== null) {
+      const val = Math.max(1, parseInt(autoBreakLunchMinutes) || 60);
+      updateData.autoBreakLunchMinutes = val;
+    }
+
+    if (autoBreakLunchAfterHours !== undefined && autoBreakLunchAfterHours !== null) {
+      const val = Math.max(0.5, parseFloat(autoBreakLunchAfterHours) || 4);
+      updateData.autoBreakLunchAfterHours = val;
+    }
+
+    if (autoBreakLunchDeductible !== undefined) {
+      updateData.autoBreakLunchDeductible = Boolean(autoBreakLunchDeductible);
+    }
+
+    if (autoCoffeeEntitled !== undefined) {
+      updateData.autoCoffeeEntitled = Boolean(autoCoffeeEntitled);
+    }
+
+    if (autoBreakCoffeeMinutes !== undefined && autoBreakCoffeeMinutes !== null) {
+      const val = Math.max(1, parseInt(autoBreakCoffeeMinutes) || 15);
+      updateData.autoBreakCoffeeMinutes = val;
+    }
+
+    if (autoBreakCoffeeCount !== undefined && autoBreakCoffeeCount !== null) {
+      const val = Math.min(10, Math.max(1, parseInt(autoBreakCoffeeCount) || 1));
+      updateData.autoBreakCoffeeCount = val;
+    }
+
+    if (autoBreakCoffeeDeductible !== undefined) {
+      updateData.autoBreakCoffeeDeductible = Boolean(autoBreakCoffeeDeductible);
     }
 
     const updatedDepartment = await prisma.department.update({

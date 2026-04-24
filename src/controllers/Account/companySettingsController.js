@@ -26,6 +26,10 @@ exports.getSettings = async (req, res) => {
         autoClockOutNotifyEmails:     true,
         multiApprovalEnabled:         true,
         secondaryApproverId:          true,
+        companyCutoffSettings:        true,
+        autoBreakBasis:               true,
+        autoLunchEnabled:             true,
+        autoCoffeeEnabled:            true,
       },
     });
     const formatted = {
@@ -37,9 +41,17 @@ exports.getSettings = async (req, res) => {
         ? parseFloat(company.autoClockOutGraceHours)   : 1.0,
       autoClockOutNotifyEmails: Array.isArray(company.autoClockOutNotifyEmails)
         ? company.autoClockOutNotifyEmails : [],
+      cutoffSettings: company.companyCutoffSettings
+        ? {
+            seedStartDate:     company.companyCutoffSettings.seedStartDate.toISOString().slice(0, 10),
+            durationDays:      company.companyCutoffSettings.durationDays,
+            paymentOffsetDays: company.companyCutoffSettings.paymentOffsetDays,
+          }
+        : null,
     };
 
     delete formatted.timeZone;
+    delete formatted.companyCutoffSettings;
 
     return res.json({ data: formatted });
   } catch (e) {
@@ -75,6 +87,10 @@ exports.updateSettings = async (req, res) => {
       autoClockOutNotifyEmails,
       multiApprovalEnabled,
       secondaryApproverId,
+      cutoffSettings,
+      autoBreakBasis,
+      autoLunchEnabled,
+      autoCoffeeEnabled,
     } = req.body;
 
     const VALID_OT_BASES = ["daily", "weekly", "cutoff"];
@@ -148,8 +164,16 @@ exports.updateSettings = async (req, res) => {
         ...(secondaryApproverId !== undefined && {
           secondaryApproverId: secondaryApproverId || null,
         }),
+        // ── Auto-break configuration ──────────────────────────────────────────
+        ...(autoBreakBasis !== undefined && {
+          autoBreakBasis: ["department", "shift"].includes(autoBreakBasis) ? autoBreakBasis : null,
+        }),
+        ...(autoLunchEnabled !== undefined && { autoLunchEnabled: Boolean(autoLunchEnabled) }),
+        ...(autoCoffeeEnabled !== undefined && { autoCoffeeEnabled: Boolean(autoCoffeeEnabled) }),
+        // ─────────────────────────────────────────────────────────────────────
       },
       select: {
+        companyCutoffSettings: true,
         id: true,
         defaultShiftHours: true,
         minimumLunchMinutes: true,
@@ -169,10 +193,50 @@ exports.updateSettings = async (req, res) => {
         autoClockOutNotifyEmails:     true,
         multiApprovalEnabled:         true,
         secondaryApproverId:          true,
+        autoBreakBasis:               true,
+        autoLunchEnabled:             true,
+        autoCoffeeEnabled:            true,
       },
     });
 
-    res.json({ data: updated });
+    // Upsert cutoff settings if provided
+    if (cutoffSettings?.seedStartDate && cutoffSettings?.durationDays) {
+      const duration = Math.max(1, Math.round(Number(cutoffSettings.durationDays)));
+      await prisma.companyCutoffSettings.upsert({
+        where:  { companyId: req.user.companyId },
+        create: {
+          companyId:         req.user.companyId,
+          seedStartDate:     new Date(cutoffSettings.seedStartDate),
+          durationDays:      duration,
+          paymentOffsetDays: cutoffSettings.paymentOffsetDays != null
+            ? Math.max(0, Number(cutoffSettings.paymentOffsetDays)) : 5,
+        },
+        update: {
+          seedStartDate:     new Date(cutoffSettings.seedStartDate),
+          durationDays:      duration,
+          ...(cutoffSettings.paymentOffsetDays != null && {
+            paymentOffsetDays: Math.max(0, Number(cutoffSettings.paymentOffsetDays)),
+          }),
+        },
+      });
+    }
+
+    const cutoff = await prisma.companyCutoffSettings.findUnique({
+      where: { companyId: req.user.companyId },
+    });
+
+    res.json({
+      data: {
+        ...updated,
+        cutoffSettings: cutoff
+          ? {
+              seedStartDate:     cutoff.seedStartDate.toISOString().slice(0, 10),
+              durationDays:      cutoff.durationDays,
+              paymentOffsetDays: cutoff.paymentOffsetDays,
+            }
+          : null,
+      },
+    });
   } catch (e) {
     console.error("updateSettings error:", e);
     res.status(400).json({ error: e.message });
