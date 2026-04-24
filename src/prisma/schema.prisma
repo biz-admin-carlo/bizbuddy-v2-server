@@ -538,8 +538,33 @@ model Company {
   autoClockOutGraceHours    Decimal? @default(1.0) @db.Decimal(4, 2) // hours AFTER scheduledEnd to auto-close
   autoClockOutNotifyEmails  Json?    @default("[]")                   // JSON string[] of SV email recipients
 
+  // Auto-break configuration
+  autoBreakBasis         String?  // "department" | "shift"
+  autoLunchEnabled       Boolean  @default(false)
+  autoLunchMinutes       Int?     // injected lunch duration in minutes
+  autoLunchAfterHours    Float?   // hours after clock-in to place lunch start
+  autoLunchDeductible    Boolean  @default(false)
+  autoCoffeeEnabled      Boolean  @default(false)
+  autoCoffeeMinutes      Int?     // duration per injected coffee break in minutes
+  autoCoffeeCount        Int?     // number of coffee breaks to inject
+  autoCoffeeDeductible   Boolean  @default(false)
+
   LiveUser LiveUser[]
 
+  companyCutoffSettings CompanyCutoffSettings?
+
+}
+
+model CompanyCutoffSettings {
+  id                String   @id @default(cuid())
+  companyId         String   @unique
+  seedStartDate     DateTime @db.Date
+  durationDays      Int
+  paymentOffsetDays Int      @default(5)
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }
 
 model Feedback {
@@ -582,7 +607,15 @@ model Department {
   coffeeBreakPaid         Boolean                  @default(false)
   autoLunchDurationMinutes Int?                    @default(60)
   autoLunchAfterHours      Float?                  @default(4.0)
-  
+  autoLunchEntitled        Boolean                 @default(false)
+  autoBreakLunchMinutes    Int?
+  autoBreakLunchAfterHours Float?
+  autoBreakLunchDeductible Boolean                 @default(false)
+  autoCoffeeEntitled       Boolean                 @default(false)
+  autoBreakCoffeeMinutes   Int?
+  autoBreakCoffeeCount     Int?
+  autoBreakCoffeeDeductible Boolean                @default(false)
+
   // Relations
   accountDeletionRequests AccountDeletionRequest[]
   company                 Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -725,8 +758,16 @@ model Shift {
   differentialMultiplier Decimal            @default(1.0)
   createdAt              DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
-  timeZone               String?
-  
+  timeZone                 String?
+  autoLunchEntitled        Boolean            @default(false)
+  autoBreakLunchMinutes    Int?
+  autoBreakLunchAfterHours Float?
+  autoBreakLunchDeductible Boolean            @default(false)
+  autoCoffeeEntitled       Boolean            @default(false)
+  autoBreakCoffeeMinutes   Int?
+  autoBreakCoffeeCount     Int?
+  autoBreakCoffeeDeductible Boolean           @default(false)
+
   company                Company            @relation(fields: [companyId], references: [id])
   ShiftSchedule          ShiftSchedule[]
   UserShift              UserShift[]
@@ -821,6 +862,8 @@ model TimeLog {
   autoClockOutAt  DateTime?
 
   autoLunchDeductionMinutes Int?
+  autoLunchApplied          Boolean  @default(false)
+  autoCoffeeApplied         Boolean  @default(false)
 
   // ── Derived / computed fields (Phase 1 — eager compute at clock-out) ────────
   // All values are recomputed by computeTimeLogSummary() and must never be

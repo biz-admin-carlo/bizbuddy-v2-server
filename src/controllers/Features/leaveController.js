@@ -7,8 +7,8 @@ const { getIO } = require("@config/socket");
 
 const _format = (l) => ({
   ...l,
-  startDate: l.startDate.toISOString(),
-  endDate:   l.endDate.toISOString(),
+  startDate: l.startDate.toISOString().slice(0, 10),
+  endDate:   l.endDate.toISOString().slice(0, 10),
   createdAt: l.createdAt.toISOString(),
   updatedAt: l.updatedAt.toISOString(),
 });
@@ -143,7 +143,7 @@ const submitLeaveRequest = async (req, res) => {
     console.error("❌ Failed to send leave submission notification:", notifError);
   }
 
-  res.status(201).json({ data });
+  res.status(201).json({ data: _format(data) });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,6 +434,12 @@ const getPendingLeavesForApprover = async (req, res) => {
           profile: { select: { firstName: true, lastName: true } },
         },
       },
+      approver: {
+        select: {
+          id: true, email: true, username: true, role: true,
+          profile: { select: { firstName: true, lastName: true } },
+        },
+      },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -453,6 +459,14 @@ const getPendingLeavesForApprover = async (req, res) => {
             name: raw.User.profile
               ? `${raw.User.profile.firstName || ""} ${raw.User.profile.lastName || ""}`.trim()
               : raw.User.username,
+          }
+        : null,
+      approver: raw?.approver
+        ? {
+            ...raw.approver,
+            name: raw.approver.profile
+              ? `${raw.approver.profile.firstName || ""} ${raw.approver.profile.lastName || ""}`.trim()
+              : raw.approver.username,
           }
         : null,
     };
@@ -497,6 +511,12 @@ const getLeavesForApprover = async (req, res) => {
             profile: { select: { firstName: true, lastName: true } },
           },
         },
+        approver: {
+          select: {
+            id: true, email: true, username: true, role: true,
+            profile: { select: { firstName: true, lastName: true } },
+          },
+        },
       },
       orderBy: { startDate: "desc" },
       take:    limit,
@@ -520,6 +540,14 @@ const getLeavesForApprover = async (req, res) => {
             name: raw.User.profile
               ? `${raw.User.profile.firstName || ""} ${raw.User.profile.lastName || ""}`.trim()
               : raw.User.username,
+          }
+        : null,
+      approver: raw?.approver
+        ? {
+            ...raw.approver,
+            name: raw.approver.profile
+              ? `${raw.approver.profile.firstName || ""} ${raw.approver.profile.lastName || ""}`.trim()
+              : raw.approver.username,
           }
         : null,
     };

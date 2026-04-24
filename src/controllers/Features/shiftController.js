@@ -111,7 +111,21 @@ const getShifts = async (req, res) => {
 const updateShift = async (req, res) => {
   try {
     const { id } = req.params;
-    const { shiftName, startTime, endTime, differentialMultiplier, timeZone } = req.body;
+    const {
+      shiftName,
+      startTime,
+      endTime,
+      differentialMultiplier,
+      timeZone,
+      autoLunchEntitled,
+      autoBreakLunchMinutes,
+      autoBreakLunchAfterHours,
+      autoBreakLunchDeductible,
+      autoCoffeeEntitled,
+      autoBreakCoffeeMinutes,
+      autoBreakCoffeeCount,
+      autoBreakCoffeeDeductible,
+    } = req.body;
     const { companyId } = req.user;
 
     // Verify shift belongs to company
@@ -129,9 +143,40 @@ const updateShift = async (req, res) => {
       differentialMultiplier 
     };
     
-    // Add timezone if provided
     if (timeZone) {
       updateData.timeZone = timeZone;
+    }
+
+    if (autoLunchEntitled !== undefined) {
+      updateData.autoLunchEntitled = Boolean(autoLunchEntitled);
+    }
+
+    if (autoBreakLunchMinutes !== undefined && autoBreakLunchMinutes !== null) {
+      updateData.autoBreakLunchMinutes = Math.max(1, parseInt(autoBreakLunchMinutes) || 60);
+    }
+
+    if (autoBreakLunchAfterHours !== undefined && autoBreakLunchAfterHours !== null) {
+      updateData.autoBreakLunchAfterHours = Math.max(0.5, parseFloat(autoBreakLunchAfterHours) || 4);
+    }
+
+    if (autoBreakLunchDeductible !== undefined) {
+      updateData.autoBreakLunchDeductible = Boolean(autoBreakLunchDeductible);
+    }
+
+    if (autoCoffeeEntitled !== undefined) {
+      updateData.autoCoffeeEntitled = Boolean(autoCoffeeEntitled);
+    }
+
+    if (autoBreakCoffeeMinutes !== undefined && autoBreakCoffeeMinutes !== null) {
+      updateData.autoBreakCoffeeMinutes = Math.max(1, parseInt(autoBreakCoffeeMinutes) || 15);
+    }
+
+    if (autoBreakCoffeeCount !== undefined && autoBreakCoffeeCount !== null) {
+      updateData.autoBreakCoffeeCount = Math.min(10, Math.max(1, parseInt(autoBreakCoffeeCount) || 1));
+    }
+
+    if (autoBreakCoffeeDeductible !== undefined) {
+      updateData.autoBreakCoffeeDeductible = Boolean(autoBreakCoffeeDeductible);
     }
     
     // Handle time updates if provided

@@ -77,13 +77,14 @@ function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
 
 /**
  * Sums all completed coffee break durations in minutes.
- * A break is only counted if it has both a start and end timestamp.
- * Open (unfinished) breaks are excluded.
+ * Auto-injected breaks marked with { auto: true, deductible: false } are excluded
+ * from the sum — they exist for paper trail only and must not affect payable hours.
  */
 function sumCoffeeBreakMinutes(coffeeBreaks) {
   if (!Array.isArray(coffeeBreaks) || coffeeBreaks.length === 0) return 0;
   return coffeeBreaks.reduce((total, b) => {
     if (!b.start || !b.end) return total;
+    if (b.auto && b.deductible === false) return total;
     const diffMs = new Date(b.end) - new Date(b.start);
     if (diffMs <= 0) return total;
     return total + diffMs / 60000;
@@ -309,7 +310,11 @@ async function computeTimeLogSummary(timeLogId) {
 
   let lunchDeductionMins;
   if (log.autoLunchDeductionMinutes != null) {
+    // Auto-injected deductible lunch — use the exact value set at injection time
     lunchDeductionMins = log.autoLunchDeductionMinutes;
+  } else if (log.autoLunchApplied) {
+    // Auto-injected but non-deductible — paper trail only, no pay impact
+    lunchDeductionMins = 0;
   } else if (lunchMins > 0) {
     lunchDeductionMins = Math.max(lunchMins, minimumLunchMins);
   } else {
