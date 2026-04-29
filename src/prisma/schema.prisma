@@ -856,7 +856,7 @@ model TimeLog {
   overtime                Overtime[]
   user                    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdFromRequest      RequestedTimeLog[] @relation("CreatedFromRequest")
-  approval                TimeLogApproval?
+  approvals               TimeLogApproval[]
 
   autoClockOut    Boolean   @default(false)
   autoClockOutAt  DateTime?
@@ -877,6 +877,8 @@ model TimeLog {
   driverAmSegmentHours  Decimal?  @db.Decimal(6, 2)  // Driver AM segment hours; null for REGULAR / DRIVER_AIDE_PM
   driverPmSegmentHours  Decimal?  @db.Decimal(6, 2)  // Driver PM segment hours; null for REGULAR / DRIVER_AIDE_AM
   rawOtMinutes          Int?                          // OT minutes past Driver PM shift end; null for REGULAR
+  scheduledHours        Decimal?  @db.Decimal(6, 2)  // sum of assigned shift durations; null when no shift assigned
+  grossHours            Decimal?  @db.Decimal(6, 2)  // raw timeOut − timeIn in hours (before any deductions)
   calculatedAt          DateTime?  @db.Timestamptz(6) // when derived fields were last computed
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -959,26 +961,31 @@ model DepartmentCutoffSettings {
 
 model TimeLogApproval {
   id              String       @id @default(cuid())
-  timeLogId       String       @unique
+  timeLogId       String       // no longer @unique — DRIVER_AIDE gets 3 records (one per segment)
   cutoffPeriodId String?
-  status          String       @default("pending") // "pending", "approved", "rejected"
+  status          String       @default("pending") // "pending", "approved", "excluded", "rejected"
   approvedBy      String?
   approvedAt      DateTime?    @db.Timestamptz(6)
-  notes           String?      // Admin comments/rejection reason
-  editedHours     Decimal?     @db.Decimal(5, 2) // If admin adjusted hours
-  
+  notes           String?
+  editedHours     Decimal?     @db.Decimal(5, 2)
+  segmentType     String?      // null = REGULAR | "driver_am" | "regular" | "driver_pm" for DRIVER_AIDE
+
   timeLog         TimeLog      @relation(fields: [timeLogId], references: [id], onDelete: Cascade)
   cutoffPeriod    CutoffPeriod? @relation(fields: [cutoffPeriodId], references: [id], onDelete: Cascade)
   approver        User?        @relation(fields: [approvedBy], references: [id])
-  
+
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
   approvedClockIn   DateTime?    @db.Timestamptz(6)
   approvedClockOut  DateTime?    @db.Timestamptz(6)
   scheduledHours    Decimal?     @db.Decimal(5, 2)
   actualHours       Decimal?     @db.Decimal(5, 2)
-  
+
   @@index([cutoffPeriodId, status])
+  @@index([timeLogId])
+  // Uniqueness enforced by DB partial indexes in migration script:
+  //   (timeLogId, segmentType) for non-null segmentType
+  //   (timeLogId) WHERE segmentType IS NULL
 }
 
 model RequestedTimeLog {

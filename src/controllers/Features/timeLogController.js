@@ -362,10 +362,11 @@ const getUserTimeLogs = async (req, res) => {
         take: limit,
         include: {
           overtime: { orderBy: { createdAt: "desc" } },
-          approval: {
+          approvals: {
             select: {
               id:     true,
               status: true,
+              segmentType: true,
               cutoffPeriod: {
                 select: {
                   id:          true,
@@ -375,6 +376,8 @@ const getUserTimeLogs = async (req, res) => {
                 },
               },
             },
+            take: 1,
+            orderBy: { createdAt: "desc" },
           },
         },
       }),
@@ -442,8 +445,10 @@ const getUserTimeLogs = async (req, res) => {
       regularSegmentHours:   l.regularSegmentHours   != null ? parseFloat(l.regularSegmentHours)   : null,
       driverAmSegmentHours:  l.driverAmSegmentHours  != null ? parseFloat(l.driverAmSegmentHours)  : null,
       driverPmSegmentHours:  l.driverPmSegmentHours  != null ? parseFloat(l.driverPmSegmentHours)  : null,
-      cutoffApproval:  l.approval ?? null,
-      approval:        undefined,
+      grossHours:            l.grossHours            != null ? parseFloat(l.grossHours)            : null,
+      scheduledHours:        l.scheduledHours        != null ? parseFloat(l.scheduledHours)        : null,
+      cutoffApproval:  l.approvals?.[0] ?? null,
+      approvals:       undefined,
       shiftName:       shiftNameMap[moment.tz(l.timeIn, tz).format("YYYY-MM-DD")] ?? null,
     }));
 
@@ -652,6 +657,8 @@ const getCompanyTimeLogs = async (req, res) => {
           driverAmSegmentHours:  true,
           driverPmSegmentHours:  true,
           rawOtMinutes:          true,
+          grossHours:            true,
+          scheduledHours:        true,
           coffeeBreaks:          true,
           lunchBreak:            true,
           deviceInfo:            true,
@@ -670,14 +677,17 @@ const getCompanyTimeLogs = async (req, res) => {
               employmentDetail: { select: { jobTitle: true } },
             },
           },
-          approval: {
+          approvals: {
             select: {
               id:     true,
               status: true,
+              segmentType: true,
               cutoffPeriod: {
                 select: { id: true, periodStart: true, periodEnd: true, status: true },
               },
             },
+            take: 1,
+            orderBy: { createdAt: "desc" },
           },
           overtime: {
             select: {
@@ -738,6 +748,8 @@ const getCompanyTimeLogs = async (req, res) => {
       driverAmSegmentHours: l.driverAmSegmentHours  != null ? parseFloat(l.driverAmSegmentHours) : null,
       driverPmSegmentHours: l.driverPmSegmentHours  != null ? parseFloat(l.driverPmSegmentHours) : null,
       rawOtMinutes:         l.rawOtMinutes          ?? null,
+      grossHours:           l.grossHours            != null ? parseFloat(l.grossHours)           : null,
+      scheduledHours:       l.scheduledHours        != null ? parseFloat(l.scheduledHours)       : null,
       // break details
       coffeeBreaks:         l.coffeeBreaks ?? [],
       lunchBreak:           l.lunchBreak  ?? null,
@@ -757,7 +769,7 @@ const getCompanyTimeLogs = async (req, res) => {
       shiftToday:           null,
       userShift:            null,
       userShifts:           [],
-      cutoffApproval:       l.approval ?? null,
+      cutoffApproval:       l.approvals?.[0] ?? null,
       // OT requests linked to this punch log — coerce Decimal fields
       overtime:             (l.overtime ?? []).map((ot) => ({
         ...ot,
