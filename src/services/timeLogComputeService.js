@@ -114,6 +114,59 @@ function computeSegmentHours(timeIn, timeOut, segStart, segEnd) {
   return +(Math.max(0, end - start) / 3600000).toFixed(2);
 }
 
+/**
+ * Given a pre-fetched array of UserShifts (with shift included), returns the
+ * one whose window has the greatest overlap with the punch [timeIn, timeOut].
+ * Falls back to the shift with the closest startTime when no overlap exists.
+ * Returns null for an empty array.
+ *
+ * Pure/sync — no DB calls. Used by both computeTimeLogSummary (B&C multi-shift)
+ * and resolveShiftForTimeLog (auto-break service).
+ */
+function matchShiftToWindow(userShifts, timeIn, timeOut, tz) {
+  if (userShifts.length === 0) return null;
+  if (userShifts.length === 1) return userShifts[0];
+
+  const timeInMs  = timeIn.getTime();
+  const timeOutMs = timeOut.getTime();
+
+  let bestMatch   = null;
+  let bestOverlap = -1;
+
+  for (const us of userShifts) {
+    if (!us.shift?.startTime || !us.shift?.endTime) continue;
+
+    const segStart = combineDateWithTimeTz(timeIn, us.shift.startTime, tz);
+    let   segEnd   = combineDateWithTimeTz(timeIn, us.shift.endTime, tz);
+    if (segEnd <= segStart) segEnd = moment(segEnd).add(1, "day").toDate();
+
+    const overlapMs = Math.max(
+      0,
+      Math.min(timeOutMs, segEnd.getTime()) - Math.max(timeInMs, segStart.getTime())
+    );
+
+    if (overlapMs > bestOverlap) {
+      bestOverlap = overlapMs;
+      bestMatch   = us;
+    }
+  }
+
+  // Fallback: no overlap — pick shift with closest startTime to timeIn
+  if (bestOverlap <= 0) {
+    bestMatch = userShifts.reduce((best, us) => {
+      if (!us.shift?.startTime) return best;
+      const segStart    = combineDateWithTimeTz(timeIn, us.shift.startTime, tz);
+      const diff        = Math.abs(timeInMs - segStart.getTime());
+      if (!best?.shift?.startTime) return us;
+      const bestSegStart = combineDateWithTimeTz(timeIn, best.shift.startTime, tz);
+      const bestDiff     = Math.abs(timeInMs - bestSegStart.getTime());
+      return diff < bestDiff ? us : best;
+    }, null);
+  }
+
+  return bestMatch;
+}
+
 // ── Core computation ──────────────────────────────────────────────────────────
 
 /**
@@ -149,7 +202,7 @@ async function computeTimeLogSummary(timeLogId) {
     where: { id: timeLogId },
     include: {
       user: {
-        select: { companyId: true },
+        select: { companyId: true, departmentId: true },
       },
     },
   });
@@ -204,6 +257,55 @@ async function computeTimeLogSummary(timeLogId) {
     orderBy: { shift: { startTime: "asc" } },
   });
 
+  // ── 3b. ShiftSchedule fallback (non-driver only) ────────────────────────────
+  // UserShift covers daily one-time assignments. Most employees are assigned via
+  // ShiftSchedule (recurring). If no UserShift is found, look up ShiftSchedule
+  // so scheduledHours / lateHours / undertimeHours are computed correctly.
+  if (!isDriverLog && userShifts.length === 0) {
+    const localDateStr = moment(timeIn).tz(tz).format("YYYY-MM-DD");
+    const dayOfWeek    = moment(localDateStr).day();
+    const { companyId, departmentId } = log.user;
+
+    const orConditions = [
+      { assignmentType: "individual", targetId: log.userId },
+      { assignmentType: "all" },
+    ];
+    if (departmentId) {
+      orConditions.push({ assignmentType: "department", targetId: departmentId });
+    }
+
+    const schedules = await prisma.shiftSchedule.findMany({
+      where: {
+        companyId,
+        OR: orConditions,
+        startDate: { lte: dayStart },
+        endDate:   { gte: dayStart },
+        isActive:  true,
+      },
+      include: {
+        shift: true,
+      },
+    });
+
+    const PRIORITY = { individual: 0, department: 1, all: 2 };
+    schedules.sort((a, b) => (PRIORITY[a.assignmentType] ?? 99) - (PRIORITY[b.assignmentType] ?? 99));
+
+    const matched = schedules.find((s) =>
+      Array.isArray(s.daysOfWeek) && s.daysOfWeek.includes(dayOfWeek)
+    );
+
+    if (matched?.shift) {
+      // Synthesise a UserShift-shaped object so the rest of the function is unchanged
+      userShifts.push({
+        id:           matched.id,
+        shift:        matched.shift,
+        assignedDate: dayStart,
+        customStartTime: null,
+        customEndTime:   null,
+      });
+    }
+  }
+
   // ── 4. Pre-fetch catalog shifts for any missing DA segment boundaries ────────
   // For Driver/Aide punch types, segment hours require boundaries for all active
   // segments (AM, Regular, PM). If the employee is unassigned for a segment (e.g.
@@ -252,25 +354,34 @@ async function computeTimeLogSummary(timeLogId) {
   }
 
   // ── 5. Resolve overall shift boundaries (shiftStart / shiftEnd) ─────────────
-  // shiftStart → earliest startTime (Driver AM when present, else Regular)
-  // shiftEnd   → latest endTime (Driver PM when present, else Regular)
+  // dayCare (isDriverLog): aggregate all shifts → earliest start, latest end.
+  //   One punch spans the full day (AM → Regular → PM).
   //
-  // For unassigned DA employees, extend shiftEnd to the catalog Driver PM end
-  // so undertimeHours is computed against the correct effective day boundary.
+  // B&C REGULAR multi-shift: narrow to the one shift this punch belongs to
+  //   via max-overlap matching. Each TimeLog computes independently against its
+  //   own shift window — separate lateHours, undertimeHours, OT per punch.
+  //
+  // Single shift (any type): use that shift's boundaries directly.
+
+  // For B&C: resolve which specific shift this punch belongs to
+  const matchedUserShift = (!isDriverLog && userShifts.length > 1)
+    ? matchShiftToWindow(userShifts, timeIn, timeOut, tz)
+    : null;
+
+  // effectiveShifts: the shift(s) used for boundaries and scheduledHours
+  const effectiveShifts = matchedUserShift ? [matchedUserShift] : userShifts;
 
   let shiftStart = null;
   let shiftEnd   = null;
 
-  if (userShifts.length > 0) {
-    // Earliest startTime — sorted by startTime asc, so first record
-    const firstShift = userShifts[0];
+  if (effectiveShifts.length > 0) {
+    const firstShift = effectiveShifts[0];
     if (firstShift.shift?.startTime) {
       shiftStart = combineDateWithTimeTz(timeIn, firstShift.shift.startTime, tz);
     }
 
-    // Latest endTime — compare resolved UTC dates across all shifts
     let latestEndDate = null;
-    for (const us of userShifts) {
+    for (const us of effectiveShifts) {
       if (!us.shift?.endTime) continue;
       const endDate = combineDateWithTimeTz(timeIn, us.shift.endTime, tz);
       if (!latestEndDate || endDate > latestEndDate) latestEndDate = endDate;
@@ -304,9 +415,14 @@ async function computeTimeLogSummary(timeLogId) {
     shiftEnd = new Date(timeIn.getTime() + defaultShiftHours * 60 * 60 * 1000);
   }
 
-  // ── 6. Compute break totals ─────────────────────────────────────────────────
-  const coffeeBreakMins = sumCoffeeBreakMinutes(log.coffeeBreaks);
-  const lunchMins       = lunchBreakMinutes(log.lunchBreak);
+  // ── 6. Compute grossHours ───────────────────────────────────────────────────
+  // Raw timeOut − timeIn in hours. No timezone dependency — pure ms difference.
+  // Counterpart to netWorkedHours (gross before deductions).
+  const grossHours = +((timeOut.getTime() - timeIn.getTime()) / 3600000).toFixed(2);
+
+  // ── 6b. Compute break totals ────────────────────────────────────────────────
+  const coffeeBreakMins  = sumCoffeeBreakMinutes(log.coffeeBreaks);
+  const lunchMins        = lunchBreakMinutes(log.lunchBreak);
 
   let lunchDeductionMins;
   if (log.autoLunchDeductionMinutes != null) {
@@ -323,19 +439,44 @@ async function computeTimeLogSummary(timeLogId) {
 
   const totalBreakMins = Math.round(coffeeBreakMins + lunchDeductionMins);
 
-  // ── 7. Compute lateHours ────────────────────────────────────────────────────
+  // ── 7. Compute scheduledHours ───────────────────────────────────────────────
+  // Sum of all assigned shift durations. For Driver/Aide this is the total of
+  // all three segments. For single-shift REGULAR it is just that shift's window.
+  // null when no shifts are assigned (no basis for a scheduled expectation).
+  let scheduledHours = null;
+
+  if (effectiveShifts.length > 0) {
+    let totalScheduledMs = 0;
+    for (const us of effectiveShifts) {
+      if (!us.shift?.startTime || !us.shift?.endTime) continue;
+      const segStart = combineDateWithTimeTz(timeIn, us.shift.startTime, tz);
+      let   segEnd   = combineDateWithTimeTz(timeIn, us.shift.endTime,   tz);
+      if (segEnd <= segStart) segEnd = moment(segEnd).add(1, "day").toDate();
+      totalScheduledMs += segEnd.getTime() - segStart.getTime();
+    }
+    if (totalScheduledMs > 0) {
+      scheduledHours = +(totalScheduledMs / 3600000).toFixed(2);
+    }
+  }
+
+  // ── 8. Compute lateHours ────────────────────────────────────────────────────
+  // Grace period is a forgiveness threshold — within grace the employee is not
+  // late at all (lateHours = 0). Once exceeded, the full raw lateness is charged
+  // (no grace deduction from the late amount).
   let lateHours = null;
 
   if (shiftStart) {
-    const lateMs = timeIn - shiftStart - graceMs;
-    lateHours    = lateMs > 0 ? +(lateMs / 3600000).toFixed(2) : 0;
+    const rawLateMs = timeIn.getTime() - shiftStart.getTime();
+    lateHours = rawLateMs > graceMs ? +(rawLateMs / 3600000).toFixed(2) : 0;
   }
 
-  // ── 8. Compute undertimeHours ───────────────────────────────────────────────
-  const undertimeMs    = shiftEnd - timeOut - graceMs;
-  const undertimeHours = undertimeMs > 0 ? +(undertimeMs / 3600000).toFixed(2) : 0;
+  // ── 9. Compute undertimeHours ───────────────────────────────────────────────
+  // Same threshold logic as lateHours — within grace the employee is not short,
+  // once exceeded the full raw undertime is charged.
+  const rawUndertimeMs = shiftEnd.getTime() - timeOut.getTime();
+  const undertimeHours = rawUndertimeMs > graceMs ? +(rawUndertimeMs / 3600000).toFixed(2) : 0;
 
-  // ── 9. Compute netWorkedHours and segment hours ─────────────────────────────
+  // ── 10. Compute netWorkedHours and segment hours ────────────────────────────
   //
   // REGULAR punch type:
   //   netWorkedHours = gross (timeOut − timeIn) minus all break deductions.
@@ -403,7 +544,7 @@ async function computeTimeLogSummary(timeLogId) {
     }
   }
 
-  // ── 10. Write back to TimeLog ───────────────────────────────────────────────
+  // ── 11. Write back to TimeLog ───────────────────────────────────────────────
   const derivedFields = {
     lateHours:             lateHours            !== null ? lateHours            : undefined,
     undertimeHours,
@@ -414,6 +555,8 @@ async function computeTimeLogSummary(timeLogId) {
     driverAmSegmentHours:  driverAmSegmentHours !== null ? driverAmSegmentHours : undefined,
     driverPmSegmentHours:  driverPmSegmentHours !== null ? driverPmSegmentHours : undefined,
     rawOtMinutes:          rawOtMinutes         !== null ? rawOtMinutes         : undefined,
+    scheduledHours:        scheduledHours       !== null ? scheduledHours       : undefined,
+    grossHours,
     calculatedAt:          new Date(),
   };
 
@@ -427,7 +570,9 @@ async function computeTimeLogSummary(timeLogId) {
     ` | punchType=${log.punchType}` +
     ` | lateHours=${lateHours ?? "n/a"}` +
     ` | undertime=${undertimeHours}h` +
+    ` | gross=${grossHours}h` +
     ` | net=${netWorkedHours}h` +
+    ` | scheduled=${scheduledHours ?? "n/a"}h` +
     ` | lunch=${Math.round(lunchDeductionMins)}min` +
     ` | rawOtMins=${rawOtMinutes ?? "n/a"}` +
     (isDriverLog
@@ -439,4 +584,35 @@ async function computeTimeLogSummary(timeLogId) {
   return derivedFields;
 }
 
-module.exports = { computeTimeLogSummary };
+// ── Shift resolver ────────────────────────────────────────────────────────────
+
+/**
+ * Given a completed TimeLog's userId, timeIn, and timeOut, returns the
+ * UserShift (with shift included) whose window has the greatest overlap with
+ * the punch window — i.e. the shift the employee was actually working.
+ *
+ * Uses company timezone for day-boundary and shift-time resolution.
+ * Falls back to closest shiftStart when no shift window overlaps at all
+ * (e.g. employee clocked in outside every scheduled window).
+ *
+ * Returns null when the employee has no UserShifts on that day.
+ */
+async function resolveShiftForTimeLog(userId, timeIn, timeOut, companyTz) {
+  const tz       = resolveTimezone(companyTz);
+  const dayStart = moment(timeIn).tz(tz).startOf("day").toDate();
+  const dayEnd   = moment(timeIn).tz(tz).endOf("day").toDate();
+
+  const userShifts = await prisma.userShift.findMany({
+    where: {
+      userId,
+      assignedDate: { gte: dayStart, lte: dayEnd },
+      status:       { not: "cancelled" },
+    },
+    include: { shift: true },
+    orderBy: { shift: { startTime: "asc" } },
+  });
+
+  return matchShiftToWindow(userShifts, timeIn, timeOut, tz);
+}
+
+module.exports = { computeTimeLogSummary, resolveShiftForTimeLog };

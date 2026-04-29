@@ -1,5 +1,6 @@
 // src/services/autoBreakService.js
 const { prisma } = require("@config/connection");
+const { resolveShiftForTimeLog } = require("@services/timeLogComputeService");
 
 const AUTO_BREAK_FIELDS = {
   autoLunchEntitled: true,
@@ -16,7 +17,7 @@ const AUTO_BREAK_FIELDS = {
  * Resolves full auto-break config for the employee from their department or shift,
  * based on the company's autoBreakBasis.
  */
-async function resolveBreakConfig(userId, timeInDate, company) {
+async function resolveBreakConfig(userId, timeIn, timeOut, company) {
   const empty = {
     autoLunchEntitled: false,
     autoBreakLunchMinutes: null,
@@ -39,13 +40,7 @@ async function resolveBreakConfig(userId, timeInDate, company) {
   }
 
   if (company.autoBreakBasis === "shift") {
-    const dateOnly = new Date(timeInDate);
-    dateOnly.setUTCHours(0, 0, 0, 0);
-
-    const userShift = await prisma.userShift.findFirst({
-      where: { userId, assignedDate: dateOnly },
-      select: { shift: { select: AUTO_BREAK_FIELDS } },
-    });
+    const userShift = await resolveShiftForTimeLog(userId, timeIn, timeOut, company.timeZone);
     return userShift?.shift ?? empty;
   }
 
@@ -84,15 +79,15 @@ async function applyAutoBreaks(timeLogId, userId) {
       autoBreakBasis: true,
       autoLunchEnabled: true,
       autoCoffeeEnabled: true,
+      timeZone: true,
     },
   });
 
   if (!company.autoBreakBasis) return null;
 
-  const config = await resolveBreakConfig(userId, timeLog.timeIn, company);
-
-  const timeIn = new Date(timeLog.timeIn);
+  const timeIn  = new Date(timeLog.timeIn);
   const timeOut = new Date(timeLog.timeOut);
+  const config  = await resolveBreakConfig(userId, timeIn, timeOut, company);
   const updates = {};
 
   // ── Auto-lunch ──────────────────────────────────────────────────────────────

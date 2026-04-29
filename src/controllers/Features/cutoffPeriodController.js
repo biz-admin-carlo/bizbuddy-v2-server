@@ -156,69 +156,8 @@ async function fetchScheduleForDate(userId, dateOnly, userDepartmentId, companyI
   return null;
 }
 
-// ── Break helpers ──
-
-function calculateBreakTimes(timeLog, department) {
-  let totalBreakMinutes = 0;
-  let unpaidBreakMinutes = 0;
-  let coffeeBreakMinutes = 0;
-  let lunchBreakMinutes = 0;
-  const coffeeBreaksList = [];
-
-  if (timeLog.lunchBreak?.breakOut && timeLog.lunchBreak?.breakIn) {
-    const mins = (new Date(timeLog.lunchBreak.breakIn) - new Date(timeLog.lunchBreak.breakOut)) / 60000;
-    lunchBreakMinutes = mins;
-    totalBreakMinutes += mins;
-    if (!department.paidBreak) unpaidBreakMinutes += mins;
-  }
-
-  if (Array.isArray(timeLog.coffeeBreaks)) {
-    timeLog.coffeeBreaks.forEach((cb, i) => {
-      if (cb.breakOut && cb.breakIn) {
-        const dur = (new Date(cb.breakIn) - new Date(cb.breakOut)) / 60000;
-        coffeeBreaksList.push({ index: i + 1, breakOut: new Date(cb.breakOut), breakIn: new Date(cb.breakIn), duration: dur });
-        coffeeBreakMinutes += dur;
-        totalBreakMinutes += dur;
-      }
-    });
-  }
-
-  return {
-    totalBreakMinutes:   parseFloat(totalBreakMinutes.toFixed(2)),
-    unpaidBreakMinutes:  parseFloat(unpaidBreakMinutes.toFixed(2)),
-    lunchBreakMinutes:   parseFloat(lunchBreakMinutes.toFixed(2)),
-    coffeeBreakMinutes:  parseFloat(coffeeBreakMinutes.toFixed(2)),
-    coffeeBreaksList,
-    hasLunchBreak:  lunchBreakMinutes > 0,
-    hasCoffeeBreaks: coffeeBreakMinutes > 0,
-  };
-}
-
-function checkCoffeeBreakPolicy(coffeeBreakMinutes, department) {
-  const maxCount = department.coffeeBreakMaxCount || 0;
-  const minutesPerBreak = department.coffeeBreakMinutes || 0;
-  const allowedMinutes = maxCount * minutesPerBreak;
-
-  if (maxCount === 0 || minutesPerBreak === 0) {
-    return { hasPolicy: false, exceeded: false, allowedMinutes: 0, actualMinutes: coffeeBreakMinutes, excessMinutes: 0, deductMinutes: 0, isPaid: false };
-  }
-
-  const exceeded = coffeeBreakMinutes > allowedMinutes;
-  const excessMinutes = exceeded ? coffeeBreakMinutes - allowedMinutes : 0;
-  return {
-    hasPolicy: true,
-    exceeded,
-    allowedMinutes: parseFloat(allowedMinutes.toFixed(2)),
-    actualMinutes:  parseFloat(coffeeBreakMinutes.toFixed(2)),
-    excessMinutes:  parseFloat(excessMinutes.toFixed(2)),
-    deductMinutes:  parseFloat(excessMinutes.toFixed(2)),
-    isPaid: department.coffeeBreakPaid || false,
-  };
-}
-
-function getTotalBreakDeductions(breakData, coffeePolicy) {
-  return parseFloat((breakData.unpaidBreakMinutes + coffeePolicy.deductMinutes).toFixed(2));
-}
+// Break computation is handled by timeLogComputeService — enrichApprovals reads
+// stored lunchDeductionMinutes and totalBreakMinutes directly from the TimeLog.
 
 /**
  * Shared: resolve companyId for a cutoff period
@@ -237,218 +176,99 @@ async function findCutoffForCompany(id, companyId) {
 }
 
 /**
- * Shared: enrich a list of timeLogApproval records with schedule + payroll data
- * @param {string} companyTimezone - IANA timezone string e.g. 'Asia/Manila'
- *   Used to extract the correct local date from UTC punch timestamps.
- *   Without this, a 6:45 AM Manila punch (stored as previous day in UTC)
- *   would match the wrong (previous day) shift.
+ * Shared: enrich approval records using stored computed fields from timeLogComputeService.
+ * Reads lateHours, undertimeHours, netWorkedHours, segment hours etc. directly from the
+ * TimeLog — no independent recomputation. For DRIVER_AIDE punches, maps each segmentType
+ * to its stored segment field.
  */
-async function enrichApprovals(approvals, gracePeriodMinutes, companyTimezone = "Asia/Manila") {
-  return Promise.all(
-    approvals.map(async (approval) => {
-      const timeLog = approval.timeLog;
+function enrichApprovals(approvals, gracePeriodMinutes) {
+  return approvals.map((approval) => {
+    const tl = approval.timeLog;
+    if (!tl) return approval;
 
-      // ✅ FIX: Two-pass date extraction.
-      // Pass 1: use companyTimezone to get approximate local date for schedule lookup.
-      // Pass 2: once we have the shift, re-extract using shift.timeZone (more accurate).
-      // This handles cases where company is in US/LA but shift is in Asia/Manila.
-      const approxLocalDateStr = moment.tz(timeLog.timeIn, companyTimezone).format("YYYY-MM-DD");
-      const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTimezone).startOf("day").toDate();
-      const department = timeLog.user?.department;
+    const isDriverAide   = tl.punchType === "DRIVER_AIDE";
+    const segmentType    = approval.segmentType ?? null;
 
-      const userShift = await fetchScheduleForDate(
-        timeLog.userId,
-        dateOnlyForSchedule,
-        timeLog.user?.departmentId,
-        timeLog.user?.companyId,
-        approxLocalDateStr
-      );
+    const lateHours      = parseFloat(tl.lateHours      ?? 0);
+    const undertimeHours = parseFloat(tl.undertimeHours ?? 0);
+    const grossHours     = parseFloat(tl.grossHours     ?? 0);
+    const rawOtMinutes   = tl.rawOtMinutes ?? 0;
 
-      let scheduledHours = null;
-      let scheduledStart = null;
-      let scheduledEnd = null;
-      let payableHours = null;
-      let payableClockIn = null;
-      let payableClockOut = null;
-      let breakData = null;
-      let coffeePolicy = null;
-      let totalBreakDeductions = 0;
+    const approvedOTHours = (tl.overtime || []).reduce(
+      (sum, ot) => sum + parseFloat(ot.requestedHours || 0), 0
+    );
 
-      if (userShift?.shift) {
-        const startTime = userShift.customStartTime || userShift.shift.startTime;
-        const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-        // ✅ KEY FIX: Use shift timezone for all date math.
-        // If shift.timeZone is null, we use a smarter fallback:
-        //   1. Detect UTC offset from the raw timeIn timestamp string
-        //   2. Use company timezone as last resort
-        // This handles: shift has no timezone but employees are in Asia/Manila
-        // while company is set to America/Los_Angeles (common misconfiguration).
-        const shiftTz = userShift.shift.timeZone;
+    let segmentHours      = null;
+    let segLateHours      = 0;
+    let segUndertimeHours = 0;
+    let segScheduledHours = null;
+    let segRawOtMinutes   = 0;
 
-        // Try to detect timezone from the UTC offset in the stored punch time
-        // e.g. "2026-03-17T06:45:00+08:00" → offset +8 → "Asia/Manila"
-        let detectedTz = null;
-        if (!shiftTz) {
-          const rawTimeIn = timeLog.timeIn?.toString() || "";
-          const offsetMatch = rawTimeIn.match(/([+-]\d{2}):(\d{2})$/);
-          if (offsetMatch) {
-            const offsetHours = parseInt(offsetMatch[1]);
-            // Map common UTC offsets to canonical timezones
-            const OFFSET_TZ_MAP = {
-              "+08": "Asia/Manila",
-              "+09": "Asia/Tokyo",
-              "+05": "Asia/Karachi",
-              "+00": "UTC",
-              "-05": "America/New_York",
-              "-06": "America/Chicago",
-              "-07": "America/Denver",
-              "-08": "America/Los_Angeles",
-            };
-            const key = (offsetHours >= 0 ? "+" : "") + String(offsetHours).padStart(3, "0").replace("-0", "-");
-            detectedTz = OFFSET_TZ_MAP[key.substring(0, 3)] || null;
-          }
-        }
-
-        const tz = shiftTz || detectedTz || companyTimezone;
-
-        // Re-extract local date using the resolved timezone
-        // ✅ If fetchScheduleForDate found the shift on an adjacent date (timezone mismatch),
-        //    use that adjusted date for schedule time calculation
-        const localDateStr = userShift._adjDate
-          || moment.tz(timeLog.timeIn, tz).format("YYYY-MM-DD");
-
-        // ✅ Pass localDateStr (string) — combineDateTime uses it directly, no UTC conversion
-        scheduledStart = combineDateTime(localDateStr, startTime, tz);
-        scheduledEnd   = combineDateTime(localDateStr, endTime, tz);
-
-        // ✅ FIX: use moment to add 1 day — avoids JS Date UTC-day arithmetic
-        if (userShift.shift.crossesMidnight) {
-          scheduledEnd = moment(scheduledEnd).add(1, "day").toDate();
-        }
-
-        scheduledHours = calculateHours(scheduledStart, scheduledEnd);
-
-        const actualClockIn  = approval.approvedClockIn  ? new Date(approval.approvedClockIn)  : new Date(timeLog.timeIn);
-        const actualClockOut = approval.approvedClockOut ? new Date(approval.approvedClockOut) : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
-
-        // Clock-in snap
-        if (actualClockIn > scheduledStart) {
-          const lateMinutes = (actualClockIn - scheduledStart) / 60000;
-          payableClockIn = lateMinutes <= gracePeriodMinutes ? scheduledStart : actualClockIn;
-        } else {
-          payableClockIn = scheduledStart;
-        }
-
-        // Clock-out (no grace)
-        payableClockOut = actualClockOut
-          ? (actualClockOut < scheduledEnd ? actualClockOut : scheduledEnd)
-          : scheduledEnd;
-
-        // ✅ Safety guard: payableClockOut must be after payableClockIn.
-        // If not (timezone/cross-midnight mismatch), fall back to actual hours.
-        if (payableClockOut <= payableClockIn) {
-          console.warn(
-            `[⚠️  enrichApprovals] payableClockOut <= payableClockIn for timeLog ${timeLog.id}. ` +
-            `Falling back to actual hours. Check company timezone (${companyTimezone}) and shift config.`
-          );
-          payableHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
-        } else {
-          const grossHours = calculateHours(payableClockIn, payableClockOut);
-
-          if (department) {
-            breakData = calculateBreakTimes(timeLog, department);
-            coffeePolicy = checkCoffeeBreakPolicy(breakData.coffeeBreakMinutes, department);
-            totalBreakDeductions = getTotalBreakDeductions(breakData, coffeePolicy);
-          }
-
-          payableHours = grossHours - totalBreakDeductions / 60;
-        }
+    if (isDriverAide) {
+      if (segmentType === "driver_am") {
+        segmentHours      = parseFloat(tl.driverAmSegmentHours ?? 0);
+        segLateHours      = lateHours; // AM is the late-bearing segment (earliest shift)
+        segScheduledHours = segmentHours;
+      } else if (segmentType === "regular") {
+        segmentHours      = parseFloat(tl.regularSegmentHours ?? 0);
+        segScheduledHours = segmentHours;
+      } else if (segmentType === "driver_pm") {
+        segmentHours      = parseFloat(tl.driverPmSegmentHours ?? 0);
+        segUndertimeHours = undertimeHours; // PM is the undertime-bearing segment (latest shift)
+        segScheduledHours = segmentHours;
+        segRawOtMinutes   = rawOtMinutes;
       }
+    } else {
+      segmentHours      = tl.netWorkedHours != null ? parseFloat(tl.netWorkedHours) : grossHours;
+      segLateHours      = lateHours;
+      segUndertimeHours = undertimeHours;
+      segScheduledHours = tl.scheduledHours != null ? parseFloat(tl.scheduledHours) : null;
+      segRawOtMinutes   = rawOtMinutes;
+    }
 
-      const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
-      const variance    = scheduledHours && actualHours ? actualHours - scheduledHours : null;
+    const lateMinutes  = parseFloat((segLateHours * 60).toFixed(2));
+    const earlyMinutes = parseFloat((segUndertimeHours * 60).toFixed(2));
+    const totalPayable = segmentHours != null
+      ? parseFloat((segmentHours + approvedOTHours).toFixed(2))
+      : null;
 
-      let lateMinutes = 0, earlyMinutes = 0, lateStatus = null, earlyStatus = null;
-      if (scheduledStart && scheduledEnd) {
-        const ci = approval.approvedClockIn ? new Date(approval.approvedClockIn) : new Date(timeLog.timeIn);
-        const co = approval.approvedClockOut ? new Date(approval.approvedClockOut) : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
-        if (ci > scheduledStart) {
-          lateMinutes = (ci - scheduledStart) / 60000;
-          lateStatus  = lateMinutes <= gracePeriodMinutes ? "within_grace" : "beyond_grace";
-        }
-        if (co && co < scheduledEnd) {
-          earlyMinutes = (scheduledEnd - co) / 60000;
-          earlyStatus  = "left_early";
-        }
-      }
+    const lunchMins  = tl.lunchDeductionMinutes ?? 0;
+    const coffeeMins = tl.totalBreakMinutes     ?? 0;
 
-      const approvedOTHours = (timeLog.overtime || []).reduce(
-        (sum, ot) => sum + parseFloat(ot.requestedHours || 0),
-        0
-      );
-
-      const totalPayable = payableHours != null
-        ? parseFloat((payableHours + approvedOTHours).toFixed(2))
-        : null;
-
-      return {
-        ...approval,
-        schedule: userShift?.shift
-          ? {
-              id:             userShift.id,
-              shiftName:      userShift.shift.shiftName,
-              scheduledStart,
-              scheduledEnd,
-              scheduledHours: scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : null,
-              payableHours:   payableHours   ? parseFloat(payableHours.toFixed(2))   : null,
-              crossesMidnight: userShift.shift.crossesMidnight || false,
-            }
+    return {
+      ...approval,
+      segmentType,
+      schedule: {
+        scheduledHours: segScheduledHours != null ? parseFloat(segScheduledHours.toFixed(2)) : null,
+      },
+      calculatedData: {
+        actualHours:     segmentHours != null ? parseFloat(segmentHours.toFixed(2)) : (grossHours || null),
+        approvedOTHours: parseFloat(approvedOTHours.toFixed(2)),
+        hasApprovedOT:   approvedOTHours > 0,
+        lateMinutes,
+        lateStatus: lateMinutes > 0
+          ? (lateMinutes <= gracePeriodMinutes ? "within_grace" : "beyond_grace")
           : null,
-        calculatedData: {
-          actualHours:     actualHours     ? parseFloat(actualHours.toFixed(2))     : null,
-          variance:        variance        ? parseFloat(variance.toFixed(2))        : null,
-          approvedOTHours: parseFloat(approvedOTHours.toFixed(2)),
-          hasApprovedOT:   approvedOTHours > 0,
-          lateMinutes:     parseFloat(lateMinutes.toFixed(2)),
-          lateStatus,
-          earlyMinutes:    parseFloat(earlyMinutes.toFixed(2)),
-          earlyStatus,
+        earlyMinutes,
+        earlyStatus: earlyMinutes > 0 ? "left_early" : null,
+        rawOtMinutes: segRawOtMinutes,
+      },
+      breakData: {
+        lunch:  { minutes: lunchMins,  deducted: lunchMins > 0 },
+        coffee: { totalMinutes: coffeeMins },
+        totalDeductions: {
+          minutes: lunchMins + coffeeMins,
+          hours:   +((lunchMins + coffeeMins) / 60).toFixed(2),
         },
-        breakData: breakData && department
-          ? {
-              lunch: {
-                minutes: breakData.lunchBreakMinutes,
-                isPaid:  department.paidBreak || false,
-                deducted: !department.paidBreak && breakData.lunchBreakMinutes > 0,
-              },
-              coffee: {
-                totalMinutes: breakData.coffeeBreakMinutes,
-                breaks:       breakData.coffeeBreaksList,
-                policy: coffeePolicy
-                  ? {
-                      hasPolicy:      coffeePolicy.hasPolicy,
-                      allowedMinutes: coffeePolicy.allowedMinutes,
-                      exceeded:       coffeePolicy.exceeded,
-                      excessMinutes:  coffeePolicy.excessMinutes,
-                      isPaid:         coffeePolicy.isPaid,
-                    }
-                  : null,
-              },
-              totalDeductions: {
-                minutes: totalBreakDeductions,
-                hours:   parseFloat((totalBreakDeductions / 60).toFixed(2)),
-              },
-            }
-          : null,
-        payrollSummary: {
-          scheduledHours:      scheduledHours  ? parseFloat(scheduledHours.toFixed(2))  : null,
-          payableRegularHours: payableHours    ? parseFloat(payableHours.toFixed(2))    : null,
-          approvedOTHours:     parseFloat(approvedOTHours.toFixed(2)),
-          totalPayableHours:   totalPayable,
-        },
-      };
-    })
-  );
+      },
+      payrollSummary: {
+        scheduledHours:      segScheduledHours != null ? parseFloat(segScheduledHours.toFixed(2)) : null,
+        payableRegularHours: segmentHours      != null ? parseFloat(segmentHours.toFixed(2))      : null,
+        approvedOTHours:     parseFloat(approvedOTHours.toFixed(2)),
+        totalPayableHours:   totalPayable,
+      },
+    };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -456,14 +276,24 @@ async function enrichApprovals(approvals, gracePeriodMinutes, companyTimezone = 
 // ─────────────────────────────────────────────────────────────────────────────
 const APPROVAL_INCLUDE = {
   timeLog: {
-    include: {
+    select: {
+      id: true, userId: true, timeIn: true, timeOut: true,
+      punchType: true, status: true, isApproved: true,
+      autoClockOut: true, lunchBreak: true, coffeeBreaks: true,
+      originalTimeIn: true, originalTimeOut: true,
+      // Derived fields — written by timeLogComputeService (source of truth)
+      lateHours: true, undertimeHours: true,
+      netWorkedHours: true, grossHours: true, scheduledHours: true,
+      rawOtMinutes: true, lunchDeductionMinutes: true, totalBreakMinutes: true,
+      regularSegmentHours: true, driverAmSegmentHours: true, driverPmSegmentHours: true,
+      calculatedAt: true,
       user: {
         select: {
           id: true,
           email: true,
           username: true,
           profile: true,
-          companyId: true,      // ✅ FIX: needed for ShiftSchedule lookup
+          companyId: true,
           departmentId: true,
           department: {
             select: {
@@ -572,19 +402,19 @@ const createCutoffPeriod = async (req, res) => {
         timeIn:  { gte: startDate, lte: endDate },
         timeOut: { not: null },
       },
-      select: { id: true },
+      select: { id: true, punchType: true },
     });
 
     if (timeLogs.length > 0) {
-      await prisma.timeLogApproval.createMany({
-        data: timeLogs.map((log) => ({
-          id:            randomUUID(),
-          timeLogId:     log.id,
-          cutoffPeriodId: cutoffPeriod.id,
-          status:        "pending",
-        })),
-        skipDuplicates: true,
+      const approvalData = timeLogs.flatMap((log) => {
+        if (log.punchType === "DRIVER_AIDE") {
+          return ["driver_am", "regular", "driver_pm"].map((segmentType) => ({
+            id: randomUUID(), timeLogId: log.id, cutoffPeriodId: cutoffPeriod.id, status: "pending", segmentType,
+          }));
+        }
+        return [{ id: randomUUID(), timeLogId: log.id, cutoffPeriodId: cutoffPeriod.id, status: "pending", segmentType: null }];
       });
+      await prisma.timeLogApproval.createMany({ data: approvalData, skipDuplicates: true });
     }
 
     console.log("[✅ Cutoff period created]", cutoffPeriod.id, `(${timeLogs.length} approvals)`);
@@ -953,18 +783,16 @@ const deleteCutoffPeriod = async (req, res) => {
 async function syncApprovalRecords(cutoffPeriod, companyId) {
   const { id: cutoffPeriodId, periodStart, periodEnd, departmentId } = cutoffPeriod;
 
-  // Build user filter — scope to department if cutoff has one
   const userWhere = { companyId };
   if (departmentId) userWhere.departmentId = departmentId;
 
-  // Find all completed time logs in this period that belong to this company/dept
   const timeLogs = await prisma.timeLog.findMany({
     where: {
       timeIn:  { gte: periodStart, lte: periodEnd },
       timeOut: { not: null },
       user:    userWhere,
     },
-    select: { id: true },
+    select: { id: true, punchType: true },
   });
 
   if (timeLogs.length === 0) {
@@ -972,15 +800,38 @@ async function syncApprovalRecords(cutoffPeriod, companyId) {
     return 0;
   }
 
-  // Create approval records for any time logs not yet linked to this cutoff
+  // DRIVER_AIDE punches get 3 segment records; all others get 1 record (segmentType = null).
+  // Clean up stale null-segmentType records for DRIVER_AIDE logs before inserting — a previous
+  // sync (or cutoff creation with old code) may have created a single segmentType:null record,
+  // which would become an orphan alongside the 3 proper segment records.
+  const driverAideIds = timeLogs
+    .filter((l) => l.punchType === "DRIVER_AIDE")
+    .map((l) => l.id);
+
+  if (driverAideIds.length > 0) {
+    await prisma.timeLogApproval.deleteMany({
+      where: {
+        cutoffPeriodId,
+        timeLogId:   { in: driverAideIds },
+        segmentType: null,
+        status:      "pending",
+      },
+    });
+  }
+
+  // DRIVER_AIDE punches get 3 segment records; all others get 1 record (segmentType = null)
+  const approvalData = timeLogs.flatMap((log) => {
+    if (log.punchType === "DRIVER_AIDE") {
+      return ["driver_am", "regular", "driver_pm"].map((segmentType) => ({
+        id: randomUUID(), timeLogId: log.id, cutoffPeriodId, status: "pending", segmentType,
+      }));
+    }
+    return [{ id: randomUUID(), timeLogId: log.id, cutoffPeriodId, status: "pending", segmentType: null }];
+  });
+
   const result = await prisma.timeLogApproval.createMany({
-    data: timeLogs.map((log) => ({
-      id:            randomUUID(),
-      timeLogId:     log.id,
-      cutoffPeriodId,
-      status:        "pending",
-    })),
-    skipDuplicates: true, // ✅ safe to re-run — ignores already-linked records
+    data: approvalData,
+    skipDuplicates: true,
   });
 
   if (result.count > 0) {
@@ -1376,21 +1227,58 @@ const updateSingleApproval = async (req, res) => {
     // ── APPROVE ──
     const company = await prisma.company.findUnique({
       where: { id: companyId },
-      select: { gracePeriodMinutes: true },
+      select: { gracePeriodMinutes: true, timeZone: true },
     });
     const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
+    const companyTz          = company?.timeZone || "America/Los_Angeles";
 
     const timeLog    = approval.timeLog;
-    const localDateStr = moment.tz(timeLog.timeIn, company?.timeZone || "Asia/Manila").format("YYYY-MM-DD");
-    const dateOnlyForSchedule = moment.tz(timeLog.timeIn, company?.timeZone || "Asia/Manila").startOf("day").toDate();
     const department = timeLog.user.department;
 
+    // ── DRIVER_AIDE segment: no snap, trust stored computed segment hours ──
+    if (timeLog.punchType === "DRIVER_AIDE") {
+      try {
+        await computeTimeLogSummary(timeLog.id);
+      } catch (computeErr) {
+        console.error(`[updateSingleApproval] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
+      }
+
+      const fresh = await prisma.timeLog.findUnique({
+        where:  { id: timeLog.id },
+        select: { driverAmSegmentHours: true, regularSegmentHours: true, driverPmSegmentHours: true },
+      });
+
+      const segHoursMap = {
+        driver_am: fresh?.driverAmSegmentHours,
+        regular:   fresh?.regularSegmentHours,
+        driver_pm: fresh?.driverPmSegmentHours,
+      };
+      const segHours = segHoursMap[approval.segmentType];
+
+      const updated = await prisma.timeLogApproval.update({
+        where: { id: approvalId },
+        data: {
+          status:          "approved",
+          approvedBy:      userId,
+          approvedAt:      new Date(),
+          approvedClockIn:  new Date(timeLog.timeIn),
+          approvedClockOut: timeLog.timeOut ? new Date(timeLog.timeOut) : null,
+          scheduledHours:   segHours != null ? parseFloat(segHours.toString()) : null,
+          actualHours:      segHours != null ? parseFloat(segHours.toString()) : null,
+          ...(notes && { notes }),
+        },
+      });
+
+      console.log("[✅ Segment approved]", approvalId, approval.segmentType);
+      return res.status(200).json({ message: "Segment approved successfully.", data: updated });
+    }
+
+    // ── REGULAR punch: apply snap then recompute ──
+    const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
+    const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
+
     const userShift = await fetchScheduleForDate(
-      timeLog.userId,
-      dateOnlyForSchedule,
-      timeLog.user?.departmentId,
-      companyId,
-      localDateStr
+      timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
     );
 
     let finalClockIn  = editedClockIn  ? new Date(editedClockIn)  : new Date(timeLog.timeIn);
@@ -1400,13 +1288,12 @@ const updateSingleApproval = async (req, res) => {
     if (userShift?.shift) {
       const startTime = userShift.customStartTime || userShift.shift.startTime;
       const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-      const tz        = userShift.shift.timeZone || company?.timeZone || "Asia/Manila";
+      const tz        = userShift.shift.timeZone || companyTz;
 
       const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
       const scheduledClockOut = combineDateTime(localDateStr, endTime, tz);
       if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
 
-      // Only apply snap if not manually edited
       if (!editedClockIn) {
         if (finalClockIn > scheduledClockIn) {
           const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
@@ -1419,7 +1306,6 @@ const updateSingleApproval = async (req, res) => {
       if (!editedClockOut) {
         if (finalClockOut) {
           finalClockOut = finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut;
-          // ✅ OT: if approved with OT, keep actual clock-out
           if (withOT && timeLog.timeOut && new Date(timeLog.timeOut) > scheduledClockOut) {
             finalClockOut = new Date(timeLog.timeOut);
           }
@@ -1428,21 +1314,11 @@ const updateSingleApproval = async (req, res) => {
         }
       }
 
-      const grossHours = calculateHours(finalClockIn, finalClockOut);
-      let totalBreakDeductions = 0;
-      if (department) {
-        const breakData    = calculateBreakTimes(timeLog, department);
-        const coffeePolicy = checkCoffeeBreakPolicy(breakData.coffeeBreakMinutes, department);
-        totalBreakDeductions = getTotalBreakDeductions(breakData, coffeePolicy);
-      }
-      scheduledHours = grossHours - totalBreakDeductions / 60;
+      scheduledHours = calculateHours(finalClockIn, finalClockOut);
     }
 
-    const actualHours = timeLog.timeOut
-      ? calculateHours(timeLog.timeIn, timeLog.timeOut)
-      : null;
+    const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
 
-    // Update the actual TimeLog with snapped/approved times
     await prisma.timeLog.update({
       where: { id: timeLog.id },
       data: {
@@ -1454,7 +1330,6 @@ const updateSingleApproval = async (req, res) => {
       },
     });
 
-    // Recompute derived fields against the approved (snapped) times
     try {
       await computeTimeLogSummary(timeLog.id);
     } catch (computeErr) {
@@ -1539,7 +1414,7 @@ const bulkUpdateApprovals = async (req, res) => {
     // ── BULK APPROVE ──
     const company = await prisma.company.findUnique({
       where: { id: companyId },
-      select: { gracePeriodMinutes: true },
+      select: { gracePeriodMinutes: true, timeZone: true },
     });
     const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
 
@@ -1574,20 +1449,44 @@ const bulkUpdateApprovals = async (req, res) => {
     let successCount = 0;
     let failCount    = 0;
 
+    const companyTz = company?.timeZone || "America/Los_Angeles";
+
     for (const approval of approvals) {
       try {
-        const timeLog    = approval.timeLog;
-        const tzForLog   = company?.timeZone || "Asia/Manila";
-        const localDateStr = moment.tz(timeLog.timeIn, tzForLog).format("YYYY-MM-DD");
-        const dateOnlyForSchedule = moment.tz(timeLog.timeIn, tzForLog).startOf("day").toDate();
-        const department = timeLog.user.department;
+        const timeLog = approval.timeLog;
+
+        // ── DRIVER_AIDE segment: no snap, trust stored computed segment hours ──
+        if (timeLog.punchType === "DRIVER_AIDE") {
+          try { await computeTimeLogSummary(timeLog.id); } catch (_) {}
+
+          const fresh = await prisma.timeLog.findUnique({
+            where:  { id: timeLog.id },
+            select: { driverAmSegmentHours: true, regularSegmentHours: true, driverPmSegmentHours: true },
+          });
+          const segHoursMap = { driver_am: fresh?.driverAmSegmentHours, regular: fresh?.regularSegmentHours, driver_pm: fresh?.driverPmSegmentHours };
+          const segHours = segHoursMap[approval.segmentType];
+
+          await prisma.timeLogApproval.update({
+            where: { id: approval.id },
+            data: {
+              status: "approved", approvedBy: userId, approvedAt: new Date(),
+              approvedClockIn: new Date(timeLog.timeIn),
+              approvedClockOut: timeLog.timeOut ? new Date(timeLog.timeOut) : null,
+              scheduledHours: segHours != null ? parseFloat(segHours.toString()) : null,
+              actualHours:    segHours != null ? parseFloat(segHours.toString()) : null,
+              ...(notes && { notes }),
+            },
+          });
+          successCount++;
+          continue;
+        }
+
+        // ── REGULAR punch: snap then recompute ──
+        const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
+        const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
 
         const userShift = await fetchScheduleForDate(
-          timeLog.userId,
-          dateOnlyForSchedule,
-          timeLog.user?.departmentId,
-          companyId,
-          localDateStr
+          timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
         );
 
         let finalClockIn  = new Date(timeLog.timeIn);
@@ -1597,7 +1496,7 @@ const bulkUpdateApprovals = async (req, res) => {
         if (userShift?.shift) {
           const startTime = userShift.customStartTime || userShift.shift.startTime;
           const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-          const tz        = userShift.shift.timeZone || tzForLog;
+          const tz        = userShift.shift.timeZone || companyTz;
 
           const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
           const scheduledClockOut = combineDateTime(localDateStr, endTime, tz);
@@ -1609,53 +1508,33 @@ const bulkUpdateApprovals = async (req, res) => {
           } else {
             finalClockIn = scheduledClockIn;
           }
-
           finalClockOut = finalClockOut
             ? (finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut)
             : scheduledClockOut;
 
-          const grossHours = calculateHours(finalClockIn, finalClockOut);
-          let totalBreakDeductions = 0;
-          if (department) {
-            const breakData    = calculateBreakTimes(timeLog, department);
-            const coffeePolicy = checkCoffeeBreakPolicy(breakData.coffeeBreakMinutes, department);
-            totalBreakDeductions = getTotalBreakDeductions(breakData, coffeePolicy);
-          }
-          scheduledHours = grossHours - totalBreakDeductions / 60;
+          scheduledHours = calculateHours(finalClockIn, finalClockOut);
         }
 
-        const actualHours = timeLog.timeOut
-          ? calculateHours(timeLog.timeIn, timeLog.timeOut)
-          : null;
+        const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
 
         await prisma.timeLog.update({
           where: { id: timeLog.id },
           data: {
             originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
             originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
-            timeIn:          finalClockIn,
-            timeOut:         finalClockOut,
-            isApproved:      true,
+            timeIn: finalClockIn, timeOut: finalClockOut, isApproved: true,
           },
         });
 
-        // Recompute derived fields against the approved (snapped) times
-        try {
-          await computeTimeLogSummary(timeLog.id);
-        } catch (computeErr) {
-          console.error(`[bulkUpdateApprovals] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
-        }
+        try { await computeTimeLogSummary(timeLog.id); } catch (_) {}
 
         await prisma.timeLogApproval.update({
           where: { id: approval.id },
           data: {
-            status:          "approved",
-            approvedBy:      userId,
-            approvedAt:      new Date(),
-            approvedClockIn:  finalClockIn,
-            approvedClockOut: finalClockOut,
-            scheduledHours:   scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : null,
-            actualHours:      actualHours    ? parseFloat(actualHours.toFixed(2))    : null,
+            status: "approved", approvedBy: userId, approvedAt: new Date(),
+            approvedClockIn: finalClockIn, approvedClockOut: finalClockOut,
+            scheduledHours: scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : null,
+            actualHours:    actualHours    ? parseFloat(actualHours.toFixed(2))    : null,
             ...(notes && { notes }),
           },
         });
@@ -1742,9 +1621,17 @@ const resolveConflict = async (req, res) => {
       return res.status(400).json({ message: `Cannot resolve — record is already ${approval.status}.` });
     }
 
-    const timeLog     = approval.timeLog;
-    const tzForConflict = company?.timeZone || "Asia/Manila";
-    const localDateStr  = moment.tz(timeLog.timeIn, tzForConflict).format("YYYY-MM-DD");
+    const timeLog = approval.timeLog;
+
+    // Fetch company settings up front — needed for timezone in both branches
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { gracePeriodMinutes: true, timeZone: true },
+    });
+    const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
+    const tzForConflict      = company?.timeZone || "America/Los_Angeles";
+
+    const localDateStr        = moment.tz(timeLog.timeIn, tzForConflict).format("YYYY-MM-DD");
     const dateOnlyForSchedule = moment.tz(timeLog.timeIn, tzForConflict).startOf("day").toDate();
 
     // ── HONOR LEAVE: exclude the punch ──
@@ -1768,11 +1655,6 @@ const resolveConflict = async (req, res) => {
     }
 
     // ── HONOR PUNCH: approve the punch + cancel the leave ──
-    const company = await prisma.company.findUnique({
-      where: { id: companyId },
-      select: { gracePeriodMinutes: true },
-    });
-    const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
 
     const userShift = await fetchScheduleForDate(
       timeLog.userId,
