@@ -158,8 +158,6 @@ const updateDepartment = async (req, res) => {
       name,
       supervisorId,
       paidBreak,
-      autoLunchDurationMinutes,
-      autoLunchAfterHours,
       coffeeBreakMaxCount,
       coffeeBreakMinutes,
       coffeeBreakPaid,
@@ -228,22 +226,6 @@ const updateDepartment = async (req, res) => {
     
     if (paidBreak !== undefined) {
       updateData.paidBreak = Boolean(paidBreak);
-    }
-
-    if (autoLunchDurationMinutes !== undefined && autoLunchDurationMinutes !== null) {
-      const val = Number(autoLunchDurationMinutes);
-      if (!Number.isInteger(val) || val < 1) {
-        return res.status(400).json({ error: "autoLunchDurationMinutes must be an integer >= 1." });
-      }
-      updateData.autoLunchDurationMinutes = val;
-    }
-
-    if (autoLunchAfterHours !== undefined && autoLunchAfterHours !== null) {
-      const val = parseFloat(autoLunchAfterHours);
-      if (isNaN(val) || val < 0.5) {
-        return res.status(400).json({ error: "autoLunchAfterHours must be a number >= 0.5." });
-      }
-      updateData.autoLunchAfterHours = val;
     }
 
     if (coffeeBreakMaxCount !== undefined && coffeeBreakMaxCount !== null) {

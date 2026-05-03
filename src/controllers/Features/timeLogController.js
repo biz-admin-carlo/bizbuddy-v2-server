@@ -878,6 +878,183 @@ const updateTimeLogDateTime = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/time-logs/:id/auto-breaks
+ * Admin-only. Removes auto-injected lunch and/or coffee breaks from a TimeLog
+ * and resets the applied flags so the record is in a correctable state.
+ * Triggers a full recompute after clearing.
+ *
+ * Body: { lunch: boolean, coffee: boolean }
+ * At least one must be true.
+ */
+const ADMIN_ROLES = new Set(["admin", "superadmin", "hr", "supervisor"]);
+
+// Checks whether a TimeLog is tied to a locked or processed cutoff period.
+// Returns the conflicting CutoffPeriod if found, null otherwise.
+async function getLockedCutoffForLog(timeLogId) {
+  const approval = await prisma.timeLogApproval.findFirst({
+    where: {
+      timeLogId,
+      cutoffPeriodId: { not: null },
+      cutoffPeriod: { status: { in: ["locked", "processed"] } },
+    },
+    select: { cutoffPeriod: { select: { id: true, status: true, periodStart: true, periodEnd: true } } },
+  });
+  return approval?.cutoffPeriod ?? null;
+}
+
+/**
+ * PATCH /api/timelogs/:id/punch-type
+ * Admin/HR/supervisor. Updates the punch type on an existing log and
+ * immediately recomputes all segment/hour derived fields.
+ * Blocked if the log is part of a locked or processed cutoff period.
+ */
+const updatePunchType = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { punchType } = req.body;
+
+    if (!ADMIN_ROLES.has(req.user.role))
+      return res.status(403).json({ message: "Admin access required." });
+
+    if (!VALID_PUNCH_TYPES.includes(punchType))
+      return res.status(400).json({ message: `Invalid punchType. Allowed: ${VALID_PUNCH_TYPES.join(", ")}` });
+
+    const log = await prisma.timeLog.findUnique({
+      where:  { id },
+      select: { userId: true, timeOut: true, user: { select: { companyId: true } } },
+    });
+    if (!log) return res.status(404).json({ message: "Time log not found." });
+    if (log.user.companyId !== req.user.companyId)
+      return res.status(403).json({ message: "Access denied: different company." });
+
+    const lockedCutoff = await getLockedCutoffForLog(id);
+    if (lockedCutoff)
+      return res.status(409).json({ message: "Cannot update a log that is part of a locked or processed cutoff period." });
+
+    const updated = await prisma.timeLog.update({ where: { id }, data: { punchType } });
+
+    if (log.timeOut) {
+      try {
+        const derived = await computeTimeLogSummary(id);
+        if (derived) Object.assign(updated, derived);
+      } catch (computeErr) {
+        console.error(`[updatePunchType] computeTimeLogSummary failed for ${id}:`, computeErr.message);
+      }
+    }
+
+    getIO().to(log.userId).emit("timeLogUpdated", { type: "punchTypeUpdated", data: updated });
+
+    return res.status(200).json({ message: "Punch type updated.", data: updated });
+  } catch (err) {
+    console.error("updatePunchType error:", err);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+/**
+ * DELETE /api/timelogs/:id
+ * Admin/HR/supervisor hard-delete. Permanently removes a punch log.
+ * Cascades to TimeLogApproval, ContestTimeLog, Overtime, etc. via schema.
+ * Blocked if the log is part of a locked or processed cutoff period.
+ */
+const adminDeleteTimeLog = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ADMIN_ROLES.has(req.user.role))
+      return res.status(403).json({ message: "Admin access required." });
+
+    const log = await prisma.timeLog.findUnique({
+      where:  { id },
+      select: { userId: true, user: { select: { companyId: true } } },
+    });
+    if (!log) return res.status(404).json({ message: "Time log not found." });
+    if (log.user.companyId !== req.user.companyId)
+      return res.status(403).json({ message: "Access denied: different company." });
+
+    const lockedCutoff = await getLockedCutoffForLog(id);
+    if (lockedCutoff)
+      return res.status(409).json({ message: "Cannot delete a log that is part of a locked or processed cutoff period." });
+
+    await prisma.timeLog.delete({ where: { id } });
+
+    getIO().to(log.userId).emit("timeLogUpdated", { type: "delete", data: { id } });
+
+    return res.status(200).json({ message: "Deleted successfully." });
+  } catch (err) {
+    console.error("adminDeleteTimeLog error:", err);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+const clearAutoBreaks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { lunch = false, coffee = false } = req.body;
+
+    if (!lunch && !coffee)
+      return res.status(400).json({ message: "Specify at least one: lunch or coffee." });
+
+    if (!["admin", "superadmin"].includes(req.user.role))
+      return res.status(403).json({ message: "Admin access required." });
+
+    const log = await prisma.timeLog.findUnique({
+      where:  { id },
+      select: {
+        userId:                    true,
+        timeOut:                   true,
+        autoLunchApplied:          true,
+        autoCoffeeApplied:         true,
+        lunchBreak:                true,
+        coffeeBreaks:              true,
+        user: { select: { companyId: true } },
+      },
+    });
+
+    if (!log) return res.status(404).json({ message: "Time log not found." });
+    if (log.user.companyId !== req.user.companyId)
+      return res.status(403).json({ message: "Access denied: different company." });
+
+    const data = {};
+
+    if (lunch && log.autoLunchApplied) {
+      data.lunchBreak                = null;
+      data.autoLunchApplied          = false;
+      data.autoLunchDeductionMinutes = null;
+    }
+
+    if (coffee && log.autoCoffeeApplied) {
+      // Preserve any manual coffee breaks the employee took; remove only auto-injected ones.
+      const existing = Array.isArray(log.coffeeBreaks) ? log.coffeeBreaks : [];
+      const manual   = existing.filter((b) => !b.auto);
+      data.coffeeBreaks      = manual.length > 0 ? manual : null;
+      data.autoCoffeeApplied = false;
+    }
+
+    if (Object.keys(data).length === 0)
+      return res.status(200).json({ message: "No auto-breaks were applied — nothing to clear." });
+
+    const updated = await prisma.timeLog.update({ where: { id }, data });
+
+    if (log.timeOut) {
+      try {
+        const derived = await computeTimeLogSummary(id);
+        if (derived) Object.assign(updated, derived);
+      } catch (computeErr) {
+        console.error(`[clearAutoBreaks] computeTimeLogSummary failed for ${id}:`, computeErr.message);
+      }
+    }
+
+    getIO().to(log.userId).emit("timeLogUpdated", { type: "autoBreakCleared", data: updated });
+
+    return res.status(200).json({ message: "Auto-breaks cleared.", data: updated });
+  } catch (err) {
+    console.error("clearAutoBreaks error:", err);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
 module.exports = {
   timeIn,
   timeOut,
@@ -890,4 +1067,7 @@ module.exports = {
   lunchBreakEnd,
   getCompanyTimeLogs,
   updateTimeLogDateTime,
+  clearAutoBreaks,
+  updatePunchType,
+  adminDeleteTimeLog,
 };

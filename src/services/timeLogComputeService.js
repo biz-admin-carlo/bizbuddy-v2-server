@@ -130,41 +130,47 @@ function matchShiftToWindow(userShifts, timeIn, timeOut, tz) {
   const timeInMs  = timeIn.getTime();
   const timeOutMs = timeOut.getTime();
 
-  let bestMatch   = null;
-  let bestOverlap = -1;
+  // Each shift is tested against two date anchors: the clock-in date and the
+  // previous calendar day. This handles midnight-crossing shifts (e.g. 10 PM–2 AM)
+  // where the employee clocks in after midnight — anchoring to yesterday produces
+  // the correct [10 PM yesterday → 2 AM today] window instead of [10 PM today → 2 AM tomorrow].
+  const prevDay = moment(timeIn).tz(tz).subtract(1, "day").toDate();
+  const anchors = [timeIn, prevDay];
 
-  for (const us of userShifts) {
-    if (!us.shift?.startTime || !us.shift?.endTime) continue;
-
-    const segStart = combineDateWithTimeTz(timeIn, us.shift.startTime, tz);
-    let   segEnd   = combineDateWithTimeTz(timeIn, us.shift.endTime, tz);
-    if (segEnd <= segStart) segEnd = moment(segEnd).add(1, "day").toDate();
-
-    const overlapMs = Math.max(
-      0,
-      Math.min(timeOutMs, segEnd.getTime()) - Math.max(timeInMs, segStart.getTime())
-    );
-
-    if (overlapMs > bestOverlap) {
-      bestOverlap = overlapMs;
-      bestMatch   = us;
+  // Precompute best overlap and closest-start-distance across both anchors for each shift.
+  const windows = userShifts.map((us) => {
+    if (!us.shift?.startTime || !us.shift?.endTime) {
+      return { us, overlap: -1, closestDist: Infinity };
     }
-  }
 
-  // Fallback: no overlap — pick shift with closest startTime to timeIn
-  if (bestOverlap <= 0) {
-    bestMatch = userShifts.reduce((best, us) => {
-      if (!us.shift?.startTime) return best;
-      const segStart    = combineDateWithTimeTz(timeIn, us.shift.startTime, tz);
-      const diff        = Math.abs(timeInMs - segStart.getTime());
-      if (!best?.shift?.startTime) return us;
-      const bestSegStart = combineDateWithTimeTz(timeIn, best.shift.startTime, tz);
-      const bestDiff     = Math.abs(timeInMs - bestSegStart.getTime());
-      return diff < bestDiff ? us : best;
-    }, null);
-  }
+    let bestOverlap = -1;
+    let closestDist = Infinity;
 
-  return bestMatch;
+    for (const anchor of anchors) {
+      const segStart = combineDateWithTimeTz(anchor, us.shift.startTime, tz);
+      let   segEnd   = combineDateWithTimeTz(anchor, us.shift.endTime, tz);
+      if (segEnd <= segStart) segEnd = moment(segEnd).add(1, "day").toDate();
+
+      const overlap = Math.max(
+        0,
+        Math.min(timeOutMs, segEnd.getTime()) - Math.max(timeInMs, segStart.getTime())
+      );
+
+      if (overlap > bestOverlap) bestOverlap = overlap;
+
+      const dist = Math.abs(timeInMs - segStart.getTime());
+      if (dist < closestDist) closestDist = dist;
+    }
+
+    return { us, overlap: bestOverlap, closestDist };
+  });
+
+  // Primary: shift with greatest overlap across both anchors
+  const best = windows.reduce((a, b) => b.overlap > a.overlap ? b : a);
+  if (best.overlap > 0) return best.us;
+
+  // Fallback: no overlap found — shift whose start is closest to timeIn
+  return windows.reduce((a, b) => b.closestDist < a.closestDist ? b : a).us;
 }
 
 // ── Core computation ──────────────────────────────────────────────────────────
@@ -212,6 +218,11 @@ async function computeTimeLogSummary(timeLogId) {
     return null;
   }
 
+  if (!log.user.companyId) {
+    console.warn(`[computeTimeLogSummary] TimeLog ${timeLogId} belongs to a user with no companyId — skipping.`);
+    return null;
+  }
+
   if (!log.timeOut) return null;
 
   const timeIn  = new Date(log.timeIn);
@@ -237,15 +248,21 @@ async function computeTimeLogSummary(timeLogId) {
   const gracePeriodMinutes = company?.gracePeriodMinutes  ?? 15;
   const minimumLunchMins   = company?.minimumLunchMinutes ?? 60;
   const defaultShiftHours  = parseFloat(company?.defaultShiftHours ?? 8);
-  const graceMs            = gracePeriodMinutes * 60 * 1000;
+  const graceMs            = (gracePeriodMinutes * 60 + 59) * 1000;
 
   // ── 3. Fetch ALL UserShifts for the clock-in date ───────────────────────────
   // Driver employees have three shifts per day (AM, Regular, PM). Fetching all
   // ensures we use the correct boundaries:
   //   - Earliest startTime → shiftStart (for lateHours)
   //   - Latest endTime     → shiftEnd   (for undertimeHours)
-  const dayStart = moment(timeIn).tz(tz).startOf("day").toDate();
-  const dayEnd   = moment(timeIn).tz(tz).endOf("day").toDate();
+  //
+  // assignedDate is @db.Date — stored as midnight UTC (e.g. 2026-04-23T00:00:00Z).
+  // A timezone-adjusted dayStart (e.g. 07:00Z for LA) would exclude the current
+  // day's records and capture the next day's instead. Use a UTC date range that
+  // matches the local calendar date of the punch so the comparison is stable.
+  const localDateStr = moment(timeIn).tz(tz).format("YYYY-MM-DD");
+  const dayStart     = new Date(`${localDateStr}T00:00:00.000Z`);
+  const dayEnd       = new Date(`${localDateStr}T23:59:59.999Z`);
 
   const userShifts = await prisma.userShift.findMany({
     where: {
@@ -262,8 +279,7 @@ async function computeTimeLogSummary(timeLogId) {
   // ShiftSchedule (recurring). If no UserShift is found, look up ShiftSchedule
   // so scheduledHours / lateHours / undertimeHours are computed correctly.
   if (!isDriverLog && userShifts.length === 0) {
-    const localDateStr = moment(timeIn).tz(tz).format("YYYY-MM-DD");
-    const dayOfWeek    = moment(localDateStr).day();
+    const dayOfWeek = moment(localDateStr).day();
     const { companyId, departmentId } = log.user;
 
     const orConditions = [
@@ -447,8 +463,13 @@ async function computeTimeLogSummary(timeLogId) {
 
   if (effectiveShifts.length > 0) {
     let totalScheduledMs = 0;
+    const seenShiftIds   = new Set();
     for (const us of effectiveShifts) {
       if (!us.shift?.startTime || !us.shift?.endTime) continue;
+      if (us.shift.id) {
+        if (seenShiftIds.has(us.shift.id)) continue;
+        seenShiftIds.add(us.shift.id);
+      }
       const segStart = combineDateWithTimeTz(timeIn, us.shift.startTime, tz);
       let   segEnd   = combineDateWithTimeTz(timeIn, us.shift.endTime,   tz);
       if (segEnd <= segStart) segEnd = moment(segEnd).add(1, "day").toDate();
@@ -595,7 +616,11 @@ async function computeTimeLogSummary(timeLogId) {
  * Falls back to closest shiftStart when no shift window overlaps at all
  * (e.g. employee clocked in outside every scheduled window).
  *
- * Returns null when the employee has no UserShifts on that day.
+ * Falls back to ShiftSchedule (recurring assignments) when no UserShift is
+ * found for the day — mirrors the same fallback in computeTimeLogSummary so
+ * the auto-break service resolves the same shift as the compute service.
+ *
+ * Returns null when the employee has no shift assignment of any kind.
  */
 async function resolveShiftForTimeLog(userId, timeIn, timeOut, companyTz) {
   const tz       = resolveTimezone(companyTz);
@@ -612,7 +637,141 @@ async function resolveShiftForTimeLog(userId, timeIn, timeOut, companyTz) {
     orderBy: { shift: { startTime: "asc" } },
   });
 
+  // ShiftSchedule fallback — only when no daily UserShift exists.
+  // Employees on recurring schedules have no UserShift record; without this
+  // fallback the auto-break service would always return empty config for them.
+  if (userShifts.length === 0) {
+    const user = await prisma.user.findUnique({
+      where:  { id: userId },
+      select: { companyId: true, departmentId: true },
+    });
+
+    if (user) {
+      const localDateStr = moment(timeIn).tz(tz).format("YYYY-MM-DD");
+      const dayOfWeek    = moment(localDateStr).day();
+
+      const orConditions = [
+        { assignmentType: "individual", targetId: userId },
+        { assignmentType: "all" },
+      ];
+      if (user.departmentId) {
+        orConditions.push({ assignmentType: "department", targetId: user.departmentId });
+      }
+
+      const schedules = await prisma.shiftSchedule.findMany({
+        where: {
+          companyId: user.companyId,
+          OR:        orConditions,
+          startDate: { lte: dayStart },
+          endDate:   { gte: dayStart },
+          isActive:  true,
+        },
+        include: { shift: true },
+      });
+
+      const PRIORITY = { individual: 0, department: 1, all: 2 };
+      schedules.sort((a, b) => (PRIORITY[a.assignmentType] ?? 99) - (PRIORITY[b.assignmentType] ?? 99));
+
+      const matched = schedules.find((s) =>
+        Array.isArray(s.daysOfWeek) && s.daysOfWeek.includes(dayOfWeek)
+      );
+
+      if (matched?.shift) {
+        userShifts.push({
+          id:              matched.id,
+          shift:           matched.shift,
+          assignedDate:    dayStart,
+          customStartTime: null,
+          customEndTime:   null,
+        });
+      }
+    }
+  }
+
   return matchShiftToWindow(userShifts, timeIn, timeOut, tz);
 }
 
-module.exports = { computeTimeLogSummary, resolveShiftForTimeLog };
+// ── Segment boundary resolver ─────────────────────────────────────────────────
+
+/**
+ * Resolves the scheduled segment time windows for a batch of DRIVER_AIDE time
+ * logs. Used by syncApprovalRecords to populate segmentStart / segmentEnd on
+ * TimeLogApproval rows.
+ *
+ * Fetches catalog shifts once per company and batches the UserShift lookup
+ * across all logs so the caller does not need N round-trips.
+ *
+ * @param {Array<{ id: string, timeIn: Date|string, userId: string }>} driverLogs
+ * @param {string} companyId
+ * @returns {Promise<Record<string, { driver_am, regular, driver_pm }>>}
+ *   Map of timeLogId → segment boundaries ({ start: Date, end: Date } | null)
+ */
+async function resolveDriverAideSegments(driverLogs, companyId) {
+  if (driverLogs.length === 0) return {};
+
+  const company = await prisma.company.findUnique({
+    where:  { id: companyId },
+    select: { timeZone: true },
+  });
+  const tz = resolveTimezone(company?.timeZone);
+
+  // Catalog shifts — single fetch for the whole batch
+  const catalogShifts = await prisma.shift.findMany({
+    where: {
+      companyId,
+      shiftName: { in: ["Regular Shift", "Driver/Aide AM Shift", "Driver/Aide PM Shift"] },
+    },
+    select: { shiftName: true, startTime: true, endTime: true },
+  });
+  const catalogShiftMap = Object.fromEntries(catalogShifts.map((s) => [s.shiftName, s]));
+
+  // Determine date range then batch-fetch all relevant UserShifts
+  const dates     = driverLogs.map((l) => new Date(l.timeIn).getTime());
+  const rangeStart = moment(new Date(Math.min(...dates))).tz(tz).startOf("day").toDate();
+  const rangeEnd   = moment(new Date(Math.max(...dates))).tz(tz).endOf("day").toDate();
+  const userIds    = [...new Set(driverLogs.map((l) => l.userId))];
+
+  const allUserShifts = await prisma.userShift.findMany({
+    where: {
+      userId:       { in: userIds },
+      assignedDate: { gte: rangeStart, lte: rangeEnd },
+      status:       { not: "cancelled" },
+    },
+    include: { shift: true },
+  });
+
+  // Group by `${userId}_${YYYY-MM-DD}` for O(1) lookup per log
+  const shiftsByUserDate = {};
+  for (const us of allUserShifts) {
+    const key = `${us.userId}_${moment(us.assignedDate).tz(tz).format("YYYY-MM-DD")}`;
+    if (!shiftsByUserDate[key]) shiftsByUserDate[key] = [];
+    shiftsByUserDate[key].push(us);
+  }
+
+  const result = {};
+  for (const log of driverLogs) {
+    const timeIn     = new Date(log.timeIn);
+    const dateStr    = moment(timeIn).tz(tz).format("YYYY-MM-DD");
+    const userShifts = shiftsByUserDate[`${log.userId}_${dateStr}`] ?? [];
+
+    const resolve = (name) => {
+      const assigned = userShifts.find((us) => us.shift?.shiftName === name);
+      const source   = assigned?.shift ?? catalogShiftMap[name] ?? null;
+      if (!source?.startTime || !source?.endTime) return null;
+      return {
+        start: combineDateWithTimeTz(timeIn, source.startTime, tz),
+        end:   combineDateWithTimeTz(timeIn, source.endTime,   tz),
+      };
+    };
+
+    result[log.id] = {
+      driver_am: resolve("Driver/Aide AM Shift"),
+      regular:   resolve("Regular Shift"),
+      driver_pm: resolve("Driver/Aide PM Shift"),
+    };
+  }
+
+  return result;
+}
+
+module.exports = { computeTimeLogSummary, resolveShiftForTimeLog, resolveDriverAideSegments };

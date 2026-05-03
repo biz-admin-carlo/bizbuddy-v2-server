@@ -19,7 +19,7 @@ const { prisma } = require("@config/connection");
 const moment = require("moment-timezone");
 const { randomUUID } = require("crypto");
 const { createNotification } = require("@services/notificationService");
-const { computeTimeLogSummary } = require("@services/timeLogComputeService");
+const { computeTimeLogSummary, resolveDriverAideSegments } = require("@services/timeLogComputeService");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -792,7 +792,7 @@ async function syncApprovalRecords(cutoffPeriod, companyId) {
       timeOut: { not: null },
       user:    userWhere,
     },
-    select: { id: true, punchType: true },
+    select: { id: true, punchType: true, timeIn: true, userId: true },
   });
 
   if (timeLogs.length === 0) {
@@ -804,9 +804,8 @@ async function syncApprovalRecords(cutoffPeriod, companyId) {
   // Clean up stale null-segmentType records for DRIVER_AIDE logs before inserting — a previous
   // sync (or cutoff creation with old code) may have created a single segmentType:null record,
   // which would become an orphan alongside the 3 proper segment records.
-  const driverAideIds = timeLogs
-    .filter((l) => l.punchType === "DRIVER_AIDE")
-    .map((l) => l.id);
+  const driverAideLogs = timeLogs.filter((l) => l.punchType === "DRIVER_AIDE");
+  const driverAideIds  = driverAideLogs.map((l) => l.id);
 
   if (driverAideIds.length > 0) {
     await prisma.timeLogApproval.deleteMany({
@@ -819,12 +818,22 @@ async function syncApprovalRecords(cutoffPeriod, companyId) {
     });
   }
 
+  // Pre-resolve segment boundaries for DRIVER_AIDE logs so segmentStart / segmentEnd
+  // are populated on the approval record at creation time.
+  const segBoundaries = await resolveDriverAideSegments(driverAideLogs, companyId);
+
   // DRIVER_AIDE punches get 3 segment records; all others get 1 record (segmentType = null)
   const approvalData = timeLogs.flatMap((log) => {
     if (log.punchType === "DRIVER_AIDE") {
-      return ["driver_am", "regular", "driver_pm"].map((segmentType) => ({
-        id: randomUUID(), timeLogId: log.id, cutoffPeriodId, status: "pending", segmentType,
-      }));
+      const segs = segBoundaries[log.id] ?? {};
+      return ["driver_am", "regular", "driver_pm"].map((segmentType) => {
+        const seg = segs[segmentType] ?? null;
+        return {
+          id: randomUUID(), timeLogId: log.id, cutoffPeriodId, status: "pending", segmentType,
+          segmentStart: seg?.start ?? null,
+          segmentEnd:   seg?.end   ?? null,
+        };
+      });
     }
     return [{ id: randomUUID(), timeLogId: log.id, cutoffPeriodId, status: "pending", segmentType: null }];
   });

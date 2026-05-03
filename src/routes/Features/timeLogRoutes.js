@@ -15,10 +15,16 @@ const {
   lunchBreakEnd,
   getCompanyTimeLogs,
   updateTimeLogDateTime,
-  getTodayShift
+  getTodayShift,
+  clearAutoBreaks,
+  updatePunchType,
+  adminDeleteTimeLog,
 } = require("@controllers/Features/timeLogController");
 
 router.patch("/:id/datetime", authenticate, updateTimeLogDateTime);
+router.patch("/:id/punch-type", authenticate, updatePunchType);
+router.delete("/:id/auto-breaks", authenticate, clearAutoBreaks);
+router.delete("/:id", authenticate, adminDeleteTimeLog);
 router.post("/time-in", authenticate, timeIn);
 router.post("/time-out", authenticate, timeOut);
 router.get("/user", authenticate, getUserTimeLogs);
