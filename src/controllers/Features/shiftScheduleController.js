@@ -77,10 +77,17 @@ const timesOverlap = (shiftA, shiftB) => {
 
 /**
  * Create a recurring shift schedule
+ *
+ * For assignmentType === 'individual': accepts targetIds (array of user IDs).
+ * Creates one ShiftSchedule row per employee so each is independently editable.
+ * Legacy single-value targetId is coerced to [targetId] for backward compat.
+ *
+ * For assignmentType === 'department' | 'all': unchanged — accepts targetId (string)
+ * and creates one ShiftSchedule record covering all resolved users.
  */
 const createShiftSchedule = async (req, res) => {
   try {
-    const { shiftId, daysOfWeek, startDate, endDate, assignmentType, targetId, replaceConflicts, skipConflicts } = req.body;
+    const { shiftId, daysOfWeek, startDate, endDate, assignmentType, targetId, targetIds, replaceConflicts, skipConflicts } = req.body;
     const { companyId } = req.user;
 
     // Validation
@@ -94,8 +101,16 @@ const createShiftSchedule = async (req, res) => {
       return res.status(400).json({ message: "Invalid assignmentType. Must be: individual, department, or all" });
     }
 
-    if (assignmentType !== 'all' && !targetId) {
-      return res.status(400).json({ message: "targetId required for individual/department assignment" });
+    if (assignmentType === 'individual') {
+      // Accept targetIds array, or coerce legacy targetId string
+      const resolvedIds = targetIds ?? (targetId ? [targetId] : null);
+      if (!Array.isArray(resolvedIds) || resolvedIds.length === 0) {
+        return res.status(400).json({ message: "targetIds (array) required for individual assignment" });
+      }
+    } else if (assignmentType === 'department') {
+      if (!targetId) {
+        return res.status(400).json({ message: "targetId required for department assignment" });
+      }
     }
 
     // Ensure daysOfWeek are stored as integers
@@ -130,14 +145,16 @@ const createShiftSchedule = async (req, res) => {
         select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
       });
     } else {
-      const user = await prisma.user.findFirst({
-        where: { id: targetId, companyId },
+      const normalizedIds = targetIds ?? [targetId];
+      targetUsers = await prisma.user.findMany({
+        where: { id: { in: normalizedIds }, companyId },
         select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } },
       });
-      if (!user) {
-        return res.status(404).json({ message: "Target user not found" });
+      if (targetUsers.length !== normalizedIds.length) {
+        const foundIds = new Set(targetUsers.map(u => u.id));
+        const missing = normalizedIds.filter(id => !foundIds.has(id));
+        return res.status(404).json({ message: "Target user(s) not found", missing });
       }
-      targetUsers = [user];
     }
 
     if (targetUsers.length === 0) {
@@ -206,37 +223,17 @@ const createShiftSchedule = async (req, res) => {
     if (conflicts.length > 0 && !replaceConflicts && !skipConflicts) {
       return res.status(409).json({
         message: "Scheduling conflicts detected",
-        conflicts,
         totalConflicts: conflicts.length,
+        conflicts: conflicts.map(({ userId, userName, userEmail, conflictCount }) => ({
+          targetId: userId,
+          userName,
+          userEmail,
+          conflictCount,
+        })),
       });
     }
 
-    if (conflicts.length > 0 && replaceConflicts) {
-      // Delete only the UserShift records that actually overlap in time.
-      // Using IDs (not userId+date) ensures non-overlapping shifts on the same
-      // date (e.g. Driver/Aide AM) are never touched.
-      const allConflictIds = conflicts.flatMap(c => c.conflictIds);
-      await prisma.userShift.deleteMany({
-        where: { id: { in: allConflictIds } },
-      });
-    }
-
-    // Create the ShiftSchedule record
-    const schedule = await prisma.shiftSchedule.create({
-      data: {
-        companyId,
-        shiftId,
-        daysOfWeek: normalizedDays,
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        isActive: true,
-        assignmentType,
-        targetId: assignmentType === 'all' ? null : targetId,
-        createdBy: req.user.id,
-      },
-    });
-
-    // Build UserShift records — when skipping conflicts, exclude conflicting dates per user
+    // Build conflict map for skipConflicts (used inside transaction)
     const conflictMap = {};
     if (skipConflicts) {
       conflicts.forEach(c => {
@@ -246,51 +243,149 @@ const createShiftSchedule = async (req, res) => {
       });
     }
 
-    const userShiftData = [];
-    for (const user of targetUsers) {
-      const blockedDates = conflictMap[user.id] || new Set();
-      for (const date of scheduleDates) {
-        if (blockedDates.has(date)) continue; // skip this date for this user
-        userShiftData.push({
-          userId: user.id,
-          shiftId,
-          assignedDate: new Date(date),
-          status: 'upcoming',
-          scheduleId: schedule.id,
-          createdFrom: 'schedule',
+    // ── Create schedules and shifts inside a single transaction ──────────────
+    const { createdSchedules, totalShifts } = await prisma.$transaction(async (tx) => {
+      // Delete conflicting records first if replacing
+      if (conflicts.length > 0 && replaceConflicts) {
+        // Using IDs (not userId+date) ensures non-overlapping shifts on the same
+        // date (e.g. Driver/Aide AM) are never touched.
+        const allConflictIds = conflicts.flatMap(c => c.conflictIds);
+        await tx.userShift.deleteMany({
+          where: { id: { in: allConflictIds } },
         });
       }
-    }
 
-    await prisma.userShift.createMany({ data: userShiftData });
+      if (assignmentType === 'individual') {
+        // One ShiftSchedule per employee — each independently editable/deletable
+        const schedules = [];
+        const allUserShiftData = [];
+        const scheduleResults = [];
 
-    // Notifications
+        for (const user of targetUsers) {
+          const schedule = await tx.shiftSchedule.create({
+            data: {
+              companyId,
+              shiftId,
+              daysOfWeek: normalizedDays,
+              startDate: new Date(startDate),
+              endDate: new Date(endDate),
+              isActive: true,
+              assignmentType,
+              targetId: user.id,
+              createdBy: req.user.id,
+            },
+          });
+          schedules.push(schedule);
+
+          const blockedDates = conflictMap[user.id] || new Set();
+          let assignedCount = 0;
+          for (const date of scheduleDates) {
+            if (blockedDates.has(date)) continue;
+            allUserShiftData.push({
+              userId: user.id,
+              shiftId,
+              assignedDate: new Date(date),
+              status: 'upcoming',
+              scheduleId: schedule.id,
+              createdFrom: 'schedule',
+            });
+            assignedCount++;
+          }
+
+          if (assignedCount > 0) {
+            scheduleResults.push({ targetId: user.id, scheduleId: schedule.id, assignedDates: assignedCount });
+          } else {
+            scheduleResults.push({ targetId: user.id, skipped: true, reason: "no non-conflicting dates" });
+          }
+        }
+
+        if (allUserShiftData.length > 0) {
+          await tx.userShift.createMany({ data: allUserShiftData });
+        }
+
+        return { createdSchedules: schedules, totalShifts: allUserShiftData.length, scheduleResults };
+      } else {
+        // department / all — one ShiftSchedule record for all resolved users
+        const schedule = await tx.shiftSchedule.create({
+          data: {
+            companyId,
+            shiftId,
+            daysOfWeek: normalizedDays,
+            startDate: new Date(startDate),
+            endDate: new Date(endDate),
+            isActive: true,
+            assignmentType,
+            targetId: assignmentType === 'all' ? null : targetId,
+            createdBy: req.user.id,
+          },
+        });
+
+        const userShiftData = [];
+        for (const user of targetUsers) {
+          const blockedDates = conflictMap[user.id] || new Set();
+          for (const date of scheduleDates) {
+            if (blockedDates.has(date)) continue;
+            userShiftData.push({
+              userId: user.id,
+              shiftId,
+              assignedDate: new Date(date),
+              status: 'upcoming',
+              scheduleId: schedule.id,
+              createdFrom: 'schedule',
+            });
+          }
+        }
+
+        if (userShiftData.length > 0) {
+          await tx.userShift.createMany({ data: userShiftData });
+        }
+
+        return { createdSchedules: [schedule], totalShifts: userShiftData.length };
+      }
+    });
+
+    // Notifications (outside transaction — side effects don't roll back)
     await notifyManagementScheduleCreated({
       companyId,
       shift,
-      schedule,
+      schedule: createdSchedules[0],
       targetCount: targetUsers.length,
-      totalShifts: userShiftData.length,
+      totalShifts,
       assignedBy: req.user.id,
     });
 
     for (const user of targetUsers) {
+      const userSchedule = assignmentType === 'individual'
+        ? createdSchedules.find(s => s.targetId === user.id)
+        : createdSchedules[0];
+
       await notifyEmployeeScheduleCreated({
         user,
         shift,
-        schedule,
+        schedule: userSchedule,
         assignedBy: req.user.id,
         companyId,
         totalDates: scheduleDates.length,
       });
     }
 
+    if (assignmentType === 'individual') {
+      const created = scheduleResults.filter(r => !r.skipped).length;
+      const skipped = scheduleResults.filter(r =>  r.skipped).length;
+      return res.status(201).json({
+        message: "Schedules created successfully",
+        created,
+        skipped,
+        results: scheduleResults,
+      });
+    }
+
     return res.status(201).json({
       message: "Schedule created successfully",
       data: {
-        schedule,
+        schedules: createdSchedules,
         assignedUsers: targetUsers.length,
-        totalShifts: userShiftData.length,
+        totalShifts,
         dates: scheduleDates.length,
         skipped: conflicts.length > 0 && skipConflicts ? conflicts.reduce((s, c) => s + c.conflictCount, 0) : 0,
       },

@@ -46,9 +46,8 @@ async function run() {
     ...(FORCE ? {} : { calculatedAt: null }),
   };
 
-  if (companyId) {
-    where.user = { companyId };
-  }
+  // Always exclude orphaned users (null companyId) — they'd loop forever in incremental mode
+  where.user = companyId ? { companyId } : { companyId: { not: null } };
 
   if (fromDate || toDate) {
     where.timeIn = {};
@@ -66,6 +65,13 @@ async function run() {
   }
 
   console.log(`📋 Found ${total} record(s) to process.\n`);
+
+  const startedAt = Date.now();
+  const elapsed   = () => {
+    const s = Math.floor((Date.now() - startedAt) / 1000);
+    const m = Math.floor(s / 60);
+    return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+  };
 
   let processed = 0;
   let succeeded = 0;
@@ -102,11 +108,11 @@ async function run() {
     if (FORCE) offset += batch.length;
 
     const pct = Math.round((processed / total) * 100);
-    console.log(`  Progress: ${processed}/${total} (${pct}%) — ✓ ${succeeded}  ✗ ${failed}  ~ ${skipped}`);
+    console.log(`  [${elapsed()}] Progress: ${processed}/${total} (${pct}%) — ✓ ${succeeded}  ✗ ${failed}  ~ ${skipped}`);
   }
 
   console.log("\n──────────────────────────────────────────────────");
-  console.log(` Backfill complete.`);
+  console.log(` Backfill complete. (${elapsed()} total)`);
   console.log(`   Total processed : ${processed}`);
   console.log(`   Succeeded       : ${succeeded}`);
   console.log(`   Failed          : ${failed}`);
