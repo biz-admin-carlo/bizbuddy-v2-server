@@ -6,6 +6,8 @@ const { getIO } = require("@config/socket");
 const { computeTimeLogSummary } = require("@services/timeLogComputeService");
 const { createLiveUser, removeLiveUser } = require("@services/liveUserService");
 const { applyAutoBreaks } = require("@services/autoBreakService");
+const { BNC_COMPANY_IDS } = require("@config/companyTypes");
+const { matchShiftToWindow } = require("@services/timeLogComputeUtils");
 const moment = require("moment-timezone");
 
 function calculateDistanceKm(lat1, lon1, lat2, lon2) {
@@ -435,6 +437,7 @@ const getUserTimeLogs = async (req, res) => {
     }
 
     // ── Shape response ────────────────────────────────────────────────────────
+    const isBnC = BNC_COMPANY_IDS.has(req.user.companyId);
     const data = logs.map((l) => ({
       ...l,
       timeIn:          l.timeIn  ? l.timeIn.toISOString()  : null,
@@ -442,18 +445,20 @@ const getUserTimeLogs = async (req, res) => {
       netWorkedHours:        l.netWorkedHours        != null ? parseFloat(l.netWorkedHours)        : null,
       lateHours:             l.lateHours             != null ? parseFloat(l.lateHours)             : null,
       undertimeHours:        l.undertimeHours        != null ? parseFloat(l.undertimeHours)        : null,
-      regularSegmentHours:   l.regularSegmentHours   != null ? parseFloat(l.regularSegmentHours)   : null,
-      driverAmSegmentHours:  l.driverAmSegmentHours  != null ? parseFloat(l.driverAmSegmentHours)  : null,
-      driverPmSegmentHours:  l.driverPmSegmentHours  != null ? parseFloat(l.driverPmSegmentHours)  : null,
+      regularSegmentHours:   isBnC ? undefined : (l.regularSegmentHours   != null ? parseFloat(l.regularSegmentHours)   : null),
+      driverAmSegmentHours:  isBnC ? undefined : (l.driverAmSegmentHours  != null ? parseFloat(l.driverAmSegmentHours)  : null),
+      driverPmSegmentHours:  isBnC ? undefined : (l.driverPmSegmentHours  != null ? parseFloat(l.driverPmSegmentHours)  : null),
       grossHours:            l.grossHours            != null ? parseFloat(l.grossHours)            : null,
       scheduledHours:        l.scheduledHours        != null ? parseFloat(l.scheduledHours)        : null,
       cutoffApproval:  l.approvals?.[0] ?? null,
       approvals:       undefined,
+      overtime:        isBnC ? undefined : l.overtime,
       shiftName:       shiftNameMap[moment.tz(l.timeIn, tz).format("YYYY-MM-DD")] ?? null,
     }));
 
     return res.status(200).json({
-      message: "Time logs retrieved.",
+      message:     "Time logs retrieved.",
+      companyType: isBnC ? "BNC" : "DAYCARE",
       data,
       pagination: {
         total,
@@ -726,6 +731,7 @@ const getCompanyTimeLogs = async (req, res) => {
     const totalHours    = parseFloat(summaryRow.totalHours ?? 0);
 
     // ── shiftToday — use company timezone for day boundaries ──────────────────
+    const isBnC = BNC_COMPANY_IDS.has(companyId);
     const rows = logs.map((l) => ({
       id:                   l.id,
       userId:               l.user.id,
@@ -744,10 +750,12 @@ const getCompanyTimeLogs = async (req, res) => {
       netWorkedHours:       l.netWorkedHours        != null ? parseFloat(l.netWorkedHours)       : null,
       lunchDeductionMinutes:l.lunchDeductionMinutes ?? null,
       totalBreakMinutes:    l.totalBreakMinutes     ?? null,
-      regularSegmentHours:  l.regularSegmentHours   != null ? parseFloat(l.regularSegmentHours)  : null,
-      driverAmSegmentHours: l.driverAmSegmentHours  != null ? parseFloat(l.driverAmSegmentHours) : null,
-      driverPmSegmentHours: l.driverPmSegmentHours  != null ? parseFloat(l.driverPmSegmentHours) : null,
-      rawOtMinutes:         l.rawOtMinutes          ?? null,
+      ...(!isBnC && {
+        regularSegmentHours:  l.regularSegmentHours  != null ? parseFloat(l.regularSegmentHours)  : null,
+        driverAmSegmentHours: l.driverAmSegmentHours != null ? parseFloat(l.driverAmSegmentHours) : null,
+        driverPmSegmentHours: l.driverPmSegmentHours != null ? parseFloat(l.driverPmSegmentHours) : null,
+        rawOtMinutes:         l.rawOtMinutes         ?? null,
+      }),
       grossHours:           l.grossHours            != null ? parseFloat(l.grossHours)           : null,
       scheduledHours:       l.scheduledHours        != null ? parseFloat(l.scheduledHours)       : null,
       // break details
@@ -770,49 +778,108 @@ const getCompanyTimeLogs = async (req, res) => {
       userShift:            null,
       userShifts:           [],
       cutoffApproval:       l.approvals?.[0] ?? null,
-      // OT requests linked to this punch log — coerce Decimal fields
-      overtime:             (l.overtime ?? []).map((ot) => ({
-        ...ot,
-        requestedHours: ot.requestedHours != null ? parseFloat(ot.requestedHours) : null,
-        createdAt:      ot.createdAt.toISOString(),
-        updatedAt:      ot.updatedAt.toISOString(),
-      })),
+      // OT requests linked to this punch log — DayCare only; B&C OT is cutoff-level aggregate
+      ...(!isBnC && {
+        overtime: (l.overtime ?? []).map((ot) => ({
+          ...ot,
+          requestedHours: ot.requestedHours != null ? parseFloat(ot.requestedHours) : null,
+          createdAt:      ot.createdAt.toISOString(),
+          updatedAt:      ot.updatedAt.toISOString(),
+        })),
+      }),
     }));
 
     if (rows.length) {
-      const userIds  = [...new Set(rows.map((r) => r.userId))];
-      const dayStart = moment().tz(tz).startOf("day").toDate();
-      const dayEnd   = moment().tz(tz).endOf("day").toDate();
-      const shiftRows = await prisma.userShift.findMany({
-        where: { userId: { in: userIds }, assignedDate: { gte: dayStart, lte: dayEnd } },
-        include: { shift: true },
-      });
-      const shiftMap = {};
-      shiftRows.forEach((s) => {
-        if (!shiftMap[s.userId]) shiftMap[s.userId] = [];
-        if (s.shift?.id && shiftMap[s.userId].some((x) => x.shift.id === s.shift.id)) return;
-        shiftMap[s.userId].push({
-          id:           s.id,
-          assignedDate: s.assignedDate.toISOString().slice(0, 10),
-          shift: {
-            id:        s.shift?.id        ?? null,
-            shiftName: s.shift?.shiftName ?? null,
-            startTime: s.shift?.startTime ?? null,
-            endTime:   s.shift?.endTime   ?? null,
+      const userIds = [...new Set(rows.map((r) => r.userId))];
+
+      if (isBnC) {
+        // BNC: query UserShifts by punch date so historical records show
+        // the correct shift, not today's. Then use matchShiftToWindow to
+        // pin each punch to its specific shift window.
+        const punchDates = rows.map((r) => moment(r.timeIn).tz(tz).format("YYYY-MM-DD")).sort();
+        const rangeStart = new Date(punchDates[0]);
+        const rangeEnd   = new Date(punchDates[punchDates.length - 1]);
+
+        const shiftRows = await prisma.userShift.findMany({
+          where: {
+            userId:       { in: userIds },
+            assignedDate: { gte: rangeStart, lte: rangeEnd },
+            status:       { not: "cancelled" },
           },
+          include: { shift: true },
         });
-      });
-      rows.forEach((r) => {
-        const shifts = shiftMap[r.userId] ?? [];
-        r.shiftToday  = shifts.map((s) => s.shift.shiftName).filter(Boolean).join(", ") || "—";
-        r.userShifts  = shifts;
-        r.userShift   = shifts[0] ?? null;
-      });
+
+        // Map: "userId:YYYY-MM-DD" → [shaped shift objects]
+        const shiftMap = {};
+        shiftRows.forEach((s) => {
+          const dateStr = s.assignedDate instanceof Date
+            ? s.assignedDate.toISOString().slice(0, 10)
+            : String(s.assignedDate).slice(0, 10);
+          const key = `${s.userId}:${dateStr}`;
+          if (!shiftMap[key]) shiftMap[key] = [];
+          const shaped = {
+            id:           s.id,
+            assignedDate: dateStr,
+            shift: {
+              id:        s.shift?.id        ?? null,
+              shiftName: s.shift?.shiftName ?? null,
+              startTime: s.shift?.startTime ?? null,
+              endTime:   s.shift?.endTime   ?? null,
+            },
+          };
+          if (!shiftMap[key].some((x) => x.shift.id === shaped.shift.id)) {
+            shiftMap[key].push(shaped);
+          }
+        });
+
+        rows.forEach((r) => {
+          const punchDate = moment(r.timeIn).tz(tz).format("YYYY-MM-DD");
+          const key       = `${r.userId}:${punchDate}`;
+          const shifts    = shiftMap[key] ?? [];
+          const matched   = shifts.length > 1
+            ? matchShiftToWindow(shifts, new Date(r.timeIn), new Date(r.timeOut ?? r.timeIn), tz)
+            : shifts[0] ?? null;
+          r.userShift  = matched;
+          r.userShifts = shifts;
+          r.shiftToday = shifts.map((s) => s.shift.shiftName).filter(Boolean);
+        });
+
+      } else {
+        // DayCare: original behavior — query today's shifts unchanged.
+        const dayStart  = moment().tz(tz).startOf("day").toDate();
+        const dayEnd    = moment().tz(tz).endOf("day").toDate();
+        const shiftRows = await prisma.userShift.findMany({
+          where: { userId: { in: userIds }, assignedDate: { gte: dayStart, lte: dayEnd } },
+          include: { shift: true },
+        });
+        const shiftMap = {};
+        shiftRows.forEach((s) => {
+          if (!shiftMap[s.userId]) shiftMap[s.userId] = [];
+          if (s.shift?.id && shiftMap[s.userId].some((x) => x.shift.id === s.shift.id)) return;
+          shiftMap[s.userId].push({
+            id:           s.id,
+            assignedDate: s.assignedDate.toISOString().slice(0, 10),
+            shift: {
+              id:        s.shift?.id        ?? null,
+              shiftName: s.shift?.shiftName ?? null,
+              startTime: s.shift?.startTime ?? null,
+              endTime:   s.shift?.endTime   ?? null,
+            },
+          });
+        });
+        rows.forEach((r) => {
+          const shifts  = shiftMap[r.userId] ?? [];
+          r.shiftToday  = shifts.map((s) => s.shift.shiftName).filter(Boolean).join(", ") || "—";
+          r.userShifts  = shifts;
+          r.userShift   = shifts[0] ?? null;
+        });
+      }
     }
 
     return res.status(200).json({
-      message: "Time logs retrieved.",
-      data:    rows,
+      message:     "Time logs retrieved.",
+      companyType: isBnC ? "BNC" : "DAYCARE",
+      data:        rows,
       pagination: {
         total,
         page,

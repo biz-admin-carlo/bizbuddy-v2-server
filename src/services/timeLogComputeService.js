@@ -38,6 +38,7 @@
 
 const moment = require("moment-timezone");
 const { prisma } = require("@config/connection");
+const { BNC_COMPANY_IDS } = require("@config/companyTypes");
 
 // ── Timezone helpers ──────────────────────────────────────────────────────────
 
@@ -224,6 +225,10 @@ async function computeTimeLogSummary(timeLogId) {
   }
 
   if (!log.timeOut) return null;
+
+  if (BNC_COMPANY_IDS.has(log.user.companyId)) {
+    return require("./strategies/bncStrategy").computeBnC(timeLogId);
+  }
 
   const timeIn  = new Date(log.timeIn);
   const timeOut = new Date(log.timeOut);
