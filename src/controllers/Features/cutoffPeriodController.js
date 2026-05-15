@@ -21,9 +21,9 @@ const { randomUUID } = require("crypto");
 const { createNotification } = require("@services/notificationService");
 const { resolveDriverAideSegments } = require("@services/timeLogComputeService");
 const { BNC_COMPANY_IDS } = require("@config/companyTypes");
-const daycareCutoffStrategy                        = require("@services/cutoff/daycareCutoffStrategy");
-const bncCutoffStrategy                            = require("@services/cutoff/bncCutoffStrategy");
-const { recomputeAllOtForCutoff, recomputeOtForTimeLog } = require("@services/cutoff/cutoffOtService");
+const daycareCutoffStrategy                        = require("@services/Cutoff/daycareCutoffStrategy");
+const bncCutoffStrategy                            = require("@services/Cutoff/bncCutoffStrategy");
+const { recomputeAllOtForCutoff, recomputeOtForTimeLog } = require("@services/Cutoff/cutoffOtService");
 
 function getApprovalStrategy(companyId) {
   return BNC_COMPANY_IDS.has(companyId) ? bncCutoffStrategy : daycareCutoffStrategy;
