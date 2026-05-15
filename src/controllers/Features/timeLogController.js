@@ -90,6 +90,7 @@ const VALID_PUNCH_TYPES = [
   "DRIVER_AIDE",
   "DRIVER_AIDE_AM",
   "DRIVER_AIDE_PM",
+  "TRAINING",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,7 +320,7 @@ const timeOut = async (req, res) => {
   }
 };
 
-const VALID_PUNCH_TYPES_SET = new Set(["REGULAR", "DRIVER_AIDE_AM", "DRIVER_AIDE_PM", "DRIVER_AIDE"]);
+const VALID_PUNCH_TYPES_SET = new Set(["REGULAR", "DRIVER_AIDE_AM", "DRIVER_AIDE_PM", "DRIVER_AIDE", "TRAINING"]);
 
 const getUserTimeLogs = async (req, res) => {
   try {
@@ -1002,11 +1003,24 @@ const updatePunchType = async (req, res) => {
     const updated = await prisma.timeLog.update({ where: { id }, data: { punchType } });
 
     if (log.timeOut) {
-      try {
-        const derived = await computeTimeLogSummary(id);
-        if (derived) Object.assign(updated, derived);
-      } catch (computeErr) {
-        console.error(`[updatePunchType] computeTimeLogSummary failed for ${id}:`, computeErr.message);
+      if (punchType === "TRAINING") {
+        const company = await prisma.company.findUnique({
+          where:  { id: log.user.companyId },
+          select: { defaultShiftHours: true },
+        });
+        const trainingHours = parseFloat((company?.defaultShiftHours ?? 8).toString());
+        const trainingUpdate = await prisma.timeLog.update({
+          where: { id },
+          data:  { netWorkedHours: trainingHours, scheduledHours: trainingHours },
+        });
+        Object.assign(updated, trainingUpdate);
+      } else {
+        try {
+          const derived = await computeTimeLogSummary(id);
+          if (derived) Object.assign(updated, derived);
+        } catch (computeErr) {
+          console.error(`[updatePunchType] computeTimeLogSummary failed for ${id}:`, computeErr.message);
+        }
       }
     }
 

@@ -30,6 +30,12 @@ const generateScheduleDates = (daysOfWeek, startDate, endDate) => {
   return dates;
 };
 
+const formatScheduleDates = (schedule) => ({
+  ...schedule,
+  startDate: format(new Date(schedule.startDate), 'yyyy-MM-dd'),
+  endDate:   format(new Date(schedule.endDate),   'yyyy-MM-dd'),
+});
+
 /**
  * Extract UTC minutes-since-midnight from a stored shift time.
  * Shift times are stored as ISO strings anchored to epoch date 1970-01-01,
@@ -383,7 +389,7 @@ const createShiftSchedule = async (req, res) => {
     return res.status(201).json({
       message: "Schedule created successfully",
       data: {
-        schedules: createdSchedules,
+        schedules: createdSchedules.map(formatScheduleDates),
         assignedUsers: targetUsers.length,
         totalShifts,
         dates: scheduleDates.length,
@@ -434,7 +440,7 @@ const getShiftSchedules = async (req, res) => {
 
     return res.status(200).json({
       message: "Schedules retrieved successfully",
-      data: schedules,
+      data: schedules.map(formatScheduleDates),
     });
   } catch (error) {
     console.error("Error getting schedules:", error);
@@ -560,7 +566,7 @@ const getShiftScheduleById = async (req, res) => {
     return res.status(200).json({
       message: "Schedule retrieved successfully",
       data: {
-        ...schedule,
+        ...formatScheduleDates(schedule),
         assignmentCount,
       },
     });
@@ -702,7 +708,7 @@ const updateShiftSchedule = async (req, res) => {
         // Schedule record is updated; just warn that no users matched
         return res.status(200).json({
           message: "Schedule updated successfully. No active users found for assignment.",
-          data: updatedSchedule,
+          data: formatScheduleDates(updatedSchedule),
           regenerated: 0,
         });
       }
@@ -713,7 +719,7 @@ const updateShiftSchedule = async (req, res) => {
       if (scheduleDates.length === 0) {
         return res.status(200).json({
           message: "Schedule updated successfully. No dates match the selected days within the date range.",
-          data: updatedSchedule,
+          data: formatScheduleDates(updatedSchedule),
           regenerated: 0,
         });
       }
@@ -737,7 +743,7 @@ const updateShiftSchedule = async (req, res) => {
 
       return res.status(200).json({
         message: "Schedule updated successfully",
-        data: updatedSchedule,
+        data: formatScheduleDates(updatedSchedule),
         regenerated: userShiftData.length,
       });
     }
@@ -745,7 +751,7 @@ const updateShiftSchedule = async (req, res) => {
     // isActive-only change — no regeneration needed
     return res.status(200).json({
       message: "Schedule updated successfully",
-      data: updatedSchedule,
+      data: formatScheduleDates(updatedSchedule),
     });
   } catch (error) {
     console.error("Error updating schedule:", error);

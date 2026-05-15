@@ -19,141 +19,14 @@ const { prisma } = require("@config/connection");
 const moment = require("moment-timezone");
 const { randomUUID } = require("crypto");
 const { createNotification } = require("@services/notificationService");
-const { computeTimeLogSummary, resolveDriverAideSegments } = require("@services/timeLogComputeService");
+const { resolveDriverAideSegments } = require("@services/timeLogComputeService");
+const { BNC_COMPANY_IDS } = require("@config/companyTypes");
+const daycareCutoffStrategy                        = require("@services/cutoff/daycareCutoffStrategy");
+const bncCutoffStrategy                            = require("@services/cutoff/bncCutoffStrategy");
+const { recomputeAllOtForCutoff, recomputeOtForTimeLog } = require("@services/cutoff/cutoffOtService");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-function calculateHours(timeIn, timeOut) {
-  if (!timeIn || !timeOut) return 0;
-  const diff = new Date(timeOut) - new Date(timeIn);
-  return diff / (1000 * 60 * 60);
-}
-
-function getDateOnly(date) {
-  const d = new Date(date);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-// ✅ FIX: combineDateTime now accepts YYYY-MM-DD string OR Date object for `date`.
-// Passing a string bypasses the UTC-vs-local ambiguity entirely.
-// Callers that know the correct local date (e.g. enrichApprovals) should pass a string.
-function combineDateTime(date, time, shiftTimezone = "Asia/Manila", companyTimezone = "Asia/Manila") {
-  // If already a YYYY-MM-DD string, use directly — no timezone conversion needed
-  const dateStr = (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
-    ? date
-    : moment.tz(date, shiftTimezone || companyTimezone).format("YYYY-MM-DD");
-
-  let timeStr;
-  if (typeof time === "string") {
-    timeStr = time;
-  } else if (time instanceof Date) {
-    const h = String(time.getUTCHours()).padStart(2, "0");
-    const m = String(time.getUTCMinutes()).padStart(2, "0");
-    const s = String(time.getUTCSeconds()).padStart(2, "0");
-    timeStr = `${h}:${m}:${s}`;
-  } else {
-    timeStr = "00:00:00";
-  }
-  return moment.tz(`${dateStr} ${timeStr}`, shiftTimezone || companyTimezone).toDate();
-}
-
-// matchesRecurrencePattern removed — ShiftSchedule now uses daysOfWeek int array
-
-// ✅ FIX: Rewritten for new ShiftSchedule schema
-// Old fields removed: assignedUserId, assignedToAll, assignedToDepartment, recurrencePattern
-// New fields used:    assignmentType ('individual'|'department'|'all'), targetId, daysOfWeek (int[])
-//
-// @param localDateStr  YYYY-MM-DD string in company timezone — used for day-of-week matching.
-//                      This avoids JS Date .getDay() returning the wrong UTC day.
-// @param dateOnly      Date object (midnight local) — used for DB date range queries.
-async function fetchScheduleForDate(userId, dateOnly, userDepartmentId, companyId, localDateStr) {
-  const SHIFT_SELECT = {
-    id: true, shiftName: true, startTime: true,
-    endTime: true, crossesMidnight: true, timeZone: true,
-  };
-
-  // 1. UserShift — highest priority (explicit daily assignment)
-  const userShift = await prisma.userShift.findFirst({
-    where: {
-      userId,
-      assignedDate: {
-        gte: dateOnly,
-        lt: new Date(dateOnly.getTime() + 24 * 60 * 60 * 1000),
-      },
-      status: { not: "cancelled" },
-    },
-    include: { shift: { select: SHIFT_SELECT } },
-  });
-  if (userShift) return userShift;
-
-  // 2. ShiftSchedule — individual > department > all
-  const orConditions = [
-    { assignmentType: "individual", targetId: userId },
-    { assignmentType: "all" },
-  ];
-  if (userDepartmentId) {
-    orConditions.push({ assignmentType: "department", targetId: userDepartmentId });
-  }
-
-  const schedules = await prisma.shiftSchedule.findMany({
-    where: {
-      ...(companyId ? { companyId } : {}),
-      OR: orConditions,
-      startDate: { lte: dateOnly },
-      endDate:   { gte: dateOnly },
-      isActive:  true,
-    },
-    include: { shift: { select: SHIFT_SELECT } },
-  });
-
-  if (!schedules.length) return null;
-
-  // Sort: individual(0) > department(1) > all(2)
-  const PRIORITY = { individual: 0, department: 1, all: 2 };
-  schedules.sort((a, b) => (PRIORITY[a.assignmentType] ?? 99) - (PRIORITY[b.assignmentType] ?? 99));
-
-  // ✅ FIX: Use localDateStr (YYYY-MM-DD) for day-of-week extraction.
-  const dayOfWeek = localDateStr
-    ? moment(localDateStr).day()
-    : dateOnly.getDay();
-
-  // Try exact date first
-  for (const schedule of schedules) {
-    const days = Array.isArray(schedule.daysOfWeek) ? schedule.daysOfWeek : [];
-    if (days.includes(dayOfWeek)) {
-      return {
-        id:              schedule.id,
-        shift:           schedule.shift,
-        customStartTime: null,
-        customEndTime:   null,
-      };
-    }
-  }
-
-  // ✅ FIX: Company timezone may differ from shift timezone (e.g. LA company, Manila workers).
-  // If no schedule found for the computed day, try adjacent days (+1 / -1).
-  // This handles: 6:45 AM Manila = 2:45 PM previous day in LA → wrong weekday extracted.
-  for (const offset of [1, -1]) {
-    const adjDay = localDateStr
-      ? moment(localDateStr).add(offset, "day").day()
-      : (dayOfWeek + offset + 7) % 7;
-    for (const schedule of schedules) {
-      const days = Array.isArray(schedule.daysOfWeek) ? schedule.daysOfWeek : [];
-      if (days.includes(adjDay)) {
-        return {
-          id:              schedule.id,
-          shift:           schedule.shift,
-          customStartTime: null,
-          customEndTime:   null,
-          _adjDate:        moment(localDateStr || dateOnly).add(offset, "day").format("YYYY-MM-DD"),
-        };
-      }
-    }
-  }
-
-  return null;
+function getApprovalStrategy(companyId) {
+  return BNC_COMPANY_IDS.has(companyId) ? bncCutoffStrategy : daycareCutoffStrategy;
 }
 
 // Break computation is handled by timeLogComputeService — enrichApprovals reads
@@ -917,12 +790,25 @@ const getCutoffApprovals = async (req, res) => {
       }
     }
 
+    // ✅ B&C: recompute OT blocks before building the response so the otBlocks
+    // array is always current — covers existing approved punches and any missed
+    // recomputes from previous approval actions.
+    if (BNC_COMPANY_IDS.has(companyId)) {
+      try {
+        await recomputeAllOtForCutoff(id, companyId);
+      } catch (e) {
+        console.error("[OT] recomputeAllOtForCutoff on load failed:", e.message);
+      }
+    }
+
     const company = await prisma.company.findUnique({
       where: { id: companyId },
-      select: { gracePeriodMinutes: true, timeZone: true },
+      select: { gracePeriodMinutes: true, timeZone: true, otBasis: true, dailyOtThresholdHours: true },
     });
-    const gracePeriodMinutes  = company?.gracePeriodMinutes ?? 15;
-    const companyTimezone     = company?.timeZone || "Asia/Manila";
+    const gracePeriodMinutes    = company?.gracePeriodMinutes ?? 15;
+    const companyTimezone       = company?.timeZone || "Asia/Manila";
+    const otBasis               = company?.otBasis || "daily";
+    const dailyOtThresholdHours = parseFloat(company?.dailyOtThresholdHours ?? 8);
 
     // ✅ When filtering by 'excluded', also include legacy 'rejected'
     let statusFilter;
@@ -1082,13 +968,85 @@ const getCutoffApprovals = async (req, res) => {
         return rows;
       });
 
+    // For B&C: batch-attach available shifts per punch so the client can render
+    // the shift picker on "Approve Schedule" without a separate API call.
+    if (BNC_COMPANY_IDS.has(companyId) && withLeaveContext.length > 0) {
+      const userIds  = [...new Set(withLeaveContext.map((a) => a.timeLog.userId))];
+      const dates    = withLeaveContext
+        .map((a) => moment.tz(a.timeLog.timeIn, companyTimezone).format("YYYY-MM-DD"))
+        .sort();
+      const rangeStart = new Date(dates[0]);
+      const rangeEnd   = new Date(`${dates[dates.length - 1]}T23:59:59.999Z`);
+
+      const shiftRows = await prisma.userShift.findMany({
+        where: {
+          userId:       { in: userIds },
+          assignedDate: { gte: rangeStart, lte: rangeEnd },
+          status:       { not: "cancelled" },
+        },
+        include: {
+          shift: { select: { id: true, shiftName: true, startTime: true, endTime: true } },
+        },
+      });
+
+      const shiftMap = {};
+      shiftRows.forEach((s) => {
+        const dateStr = (s.assignedDate instanceof Date
+          ? s.assignedDate.toISOString()
+          : String(s.assignedDate)).slice(0, 10);
+        const key = `${s.userId}:${dateStr}`;
+        if (!shiftMap[key]) shiftMap[key] = [];
+        if (s.shift?.id && !shiftMap[key].some((x) => x.id === s.shift.id)) {
+          // startTime/endTime are @db.Time(6) — Prisma returns Date objects that
+          // serialize to ISO strings. Format as "HH:mm" for the shift picker display.
+          const toHHMM = (t) => t instanceof Date
+            ? `${String(t.getUTCHours()).padStart(2, "0")}:${String(t.getUTCMinutes()).padStart(2, "0")}`
+            : String(t).slice(0, 5);
+          shiftMap[key].push({
+            id:        s.shift.id,
+            shiftName: s.shift.shiftName,
+            startTime: toHHMM(s.shift.startTime),
+            endTime:   toHHMM(s.shift.endTime),
+          });
+        }
+      });
+
+      withLeaveContext.forEach((a) => {
+        const punchDate = moment.tz(a.timeLog.timeIn, companyTimezone).format("YYYY-MM-DD");
+        a.availableShifts = shiftMap[`${a.timeLog.userId}:${punchDate}`] ?? [];
+      });
+    }
+
+    // For B&C: fetch OT blocks for this cutoff and include in the response.
+    // The client uses these to render the OT approval row per employee-day.
+    let otBlocks = [];
+    if (BNC_COMPANY_IDS.has(companyId)) {
+      otBlocks = await prisma.cutoffOtBlock.findMany({
+        where: { cutoffPeriodId: id },
+        orderBy: [{ date: "asc" }],
+        include: {
+          user: {
+            select: {
+              id:       true,
+              username: true,
+              profile:  true,
+            },
+          },
+        },
+      });
+    }
+
     return res.status(200).json({
-      message:           "Approvals retrieved successfully.",
-      data:              withLeaveContext,
-      leaves:            standaloneLeaves,
+      message:               "Approvals retrieved successfully.",
+      data:                  withLeaveContext,
+      leaves:                standaloneLeaves,
+      otBlocks,
       gracePeriodMinutes,
       companyTimezone,
-      synced:            true,
+      otBasis,
+      dailyOtThresholdHours,
+      isBNC:                 BNC_COMPANY_IDS.has(companyId),
+      synced:                true,
     });
   } catch (error) {
     console.error("❌ getCutoffApprovals:", error);
@@ -1140,14 +1098,13 @@ const getPendingApprovals = async (req, res) => {
 
 /**
  * PATCH /api/cutoff-periods/:id/approvals/:approvalId
- * Approve, exclude, or reject a single time log
- * ✅ FIX: Now handles 'approve', 'exclude', and legacy 'reject' actions
- * ✅ FIX: On approve, applies snap rules and updates the actual TimeLog
+ * Approve, exclude, or reject a single time log.
+ * Dispatches to the company-type strategy — DayCare or B&C.
  */
 const updateSingleApproval = async (req, res) => {
   try {
     const { id, approvalId } = req.params;
-    const { action, notes, reason, withOT, editedClockIn, editedClockOut } = req.body;
+    const { action, approvalMode, notes, reason, withOT, shiftId, editedClockIn, editedClockOut } = req.body;
     const userId    = req.user.id;
     const companyId = req.user.companyId;
 
@@ -1164,208 +1121,16 @@ const updateSingleApproval = async (req, res) => {
       return res.status(400).json({ message: `Cannot modify a ${cutoffPeriod.status} cutoff period.` });
     }
 
-    const approval = await prisma.timeLogApproval.findUnique({
-      where: { id: approvalId },
-      include: {
-        timeLog: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                departmentId: true,
-                department: {
-                  select: {
-                    paidBreak: true,
-                    coffeeBreakMaxCount: true,
-                    coffeeBreakMinutes: true,
-                    coffeeBreakPaid: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+    const result = await getApprovalStrategy(companyId).approveSingle(approvalId, {
+      cutoffPeriodId: id,
+      action, approvalMode, userId, companyId, notes, reason, withOT, shiftId, editedClockIn, editedClockOut,
     });
 
-    if (!approval || approval.cutoffPeriodId !== id) {
-      return res.status(404).json({ message: "Approval record not found in this cutoff period." });
-    }
-
-    if (approval.status !== "pending") {
-      return res.status(400).json({ message: `Cannot modify an already ${approval.status} record.` });
-    }
-
-    // ── EXCLUDE ──
-    if (action === "exclude") {
-      const updated = await prisma.timeLogApproval.update({
-        where: { id: approvalId },
-        data: {
-          status:     "excluded",
-          approvedBy: userId,
-          approvedAt: new Date(),
-          notes:      reason || notes || null,
-        },
-      });
-
-      console.log("[✅ Record excluded]", approvalId);
-      return res.status(200).json({
-        message: "Record excluded from payroll.",
-        data: updated,
-      });
-    }
-
-    // ── REJECT (legacy — treated as exclude for consistency) ──
-    if (action === "reject") {
-      const updated = await prisma.timeLogApproval.update({
-        where: { id: approvalId },
-        data: {
-          status:     "excluded",
-          approvedBy: userId,
-          approvedAt: new Date(),
-          notes:      notes || "Rejected by supervisor",
-        },
-      });
-
-      return res.status(200).json({
-        message: "Record excluded from payroll.",
-        data: updated,
-      });
-    }
-
-    // ── APPROVE ──
-    const company = await prisma.company.findUnique({
-      where: { id: companyId },
-      select: { gracePeriodMinutes: true, timeZone: true },
-    });
-    const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
-    const companyTz          = company?.timeZone || "America/Los_Angeles";
-
-    const timeLog    = approval.timeLog;
-    const department = timeLog.user.department;
-
-    // ── DRIVER_AIDE segment: no snap, trust stored computed segment hours ──
-    if (timeLog.punchType === "DRIVER_AIDE") {
-      try {
-        await computeTimeLogSummary(timeLog.id);
-      } catch (computeErr) {
-        console.error(`[updateSingleApproval] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
-      }
-
-      const fresh = await prisma.timeLog.findUnique({
-        where:  { id: timeLog.id },
-        select: { driverAmSegmentHours: true, regularSegmentHours: true, driverPmSegmentHours: true },
-      });
-
-      const segHoursMap = {
-        driver_am: fresh?.driverAmSegmentHours,
-        regular:   fresh?.regularSegmentHours,
-        driver_pm: fresh?.driverPmSegmentHours,
-      };
-      const segHours = segHoursMap[approval.segmentType];
-
-      const updated = await prisma.timeLogApproval.update({
-        where: { id: approvalId },
-        data: {
-          status:          "approved",
-          approvedBy:      userId,
-          approvedAt:      new Date(),
-          approvedClockIn:  new Date(timeLog.timeIn),
-          approvedClockOut: timeLog.timeOut ? new Date(timeLog.timeOut) : null,
-          scheduledHours:   segHours != null ? parseFloat(segHours.toString()) : null,
-          actualHours:      segHours != null ? parseFloat(segHours.toString()) : null,
-          ...(notes && { notes }),
-        },
-      });
-
-      console.log("[✅ Segment approved]", approvalId, approval.segmentType);
-      return res.status(200).json({ message: "Segment approved successfully.", data: updated });
-    }
-
-    // ── REGULAR punch: apply snap then recompute ──
-    const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
-    const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
-
-    const userShift = await fetchScheduleForDate(
-      timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
-    );
-
-    let finalClockIn  = editedClockIn  ? new Date(editedClockIn)  : new Date(timeLog.timeIn);
-    let finalClockOut = editedClockOut ? new Date(editedClockOut) : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
-    let scheduledHours = null;
-
-    if (userShift?.shift) {
-      const startTime = userShift.customStartTime || userShift.shift.startTime;
-      const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-      const tz        = userShift.shift.timeZone || companyTz;
-
-      const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
-      const scheduledClockOut = combineDateTime(localDateStr, endTime, tz);
-      if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
-
-      if (!editedClockIn) {
-        if (finalClockIn > scheduledClockIn) {
-          const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
-          finalClockIn = lateMinutes <= gracePeriodMinutes ? scheduledClockIn : finalClockIn;
-        } else {
-          finalClockIn = scheduledClockIn;
-        }
-      }
-
-      if (!editedClockOut) {
-        if (finalClockOut) {
-          finalClockOut = finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut;
-          if (withOT && timeLog.timeOut && new Date(timeLog.timeOut) > scheduledClockOut) {
-            finalClockOut = new Date(timeLog.timeOut);
-          }
-        } else {
-          finalClockOut = scheduledClockOut;
-        }
-      }
-
-      scheduledHours = calculateHours(finalClockIn, finalClockOut);
-    }
-
-    const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
-
-    await prisma.timeLog.update({
-      where: { id: timeLog.id },
-      data: {
-        originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
-        originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
-        timeIn:          finalClockIn,
-        timeOut:         finalClockOut,
-        isApproved:      true,
-      },
-    });
-
-    try {
-      await computeTimeLogSummary(timeLog.id);
-    } catch (computeErr) {
-      console.error(`[updateSingleApproval] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
-    }
-
-    const updated = await prisma.timeLogApproval.update({
-      where: { id: approvalId },
-      data: {
-        status:          "approved",
-        approvedBy:      userId,
-        approvedAt:      new Date(),
-        approvedClockIn:  finalClockIn,
-        approvedClockOut: finalClockOut,
-        scheduledHours:   scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : null,
-        actualHours:      actualHours    ? parseFloat(actualHours.toFixed(2))    : null,
-        ...(notes && { notes }),
-      },
-    });
-
-    console.log("[✅ Approval approved]", approvalId, withOT ? "(with OT)" : "");
-
-    return res.status(200).json({
-      message: `Time log approved successfully.`,
-      data:    updated,
-    });
+    return res.status(200).json(result);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     console.error("❌ updateSingleApproval:", error);
     return res.status(500).json({ message: "Internal server error.", error: error.message });
   }
@@ -1373,8 +1138,8 @@ const updateSingleApproval = async (req, res) => {
 
 /**
  * PATCH /api/cutoff-periods/:id/approvals/bulk
- * Bulk approve or exclude multiple time logs
- * ✅ FIX: action is now 'approve' | 'exclude' (reject treated as exclude)
+ * Bulk approve or exclude multiple time logs.
+ * Dispatches to the company-type strategy — DayCare or B&C.
  */
 const bulkUpdateApprovals = async (req, res) => {
   try {
@@ -1398,170 +1163,15 @@ const bulkUpdateApprovals = async (req, res) => {
       return res.status(400).json({ message: `Cannot modify a ${cutoffPeriod.status} cutoff period.` });
     }
 
-    // ✅ Exclude / reject — simple status update, no TimeLog mutation
-    if (action === "exclude" || action === "reject") {
-      const updated = await prisma.timeLogApproval.updateMany({
-        where: {
-          cutoffPeriodId: id,
-          timeLogId: { in: timeLogIds },
-          status:    "pending",
-        },
-        data: {
-          status:     "excluded",
-          approvedBy: userId,
-          approvedAt: new Date(),
-          ...(notes && { notes }),
-        },
-      });
-
-      return res.status(200).json({
-        message: `${updated.count} record(s) excluded from payroll.`,
-        data: { count: updated.count },
-      });
-    }
-
-    // ── BULK APPROVE ──
-    const company = await prisma.company.findUnique({
-      where: { id: companyId },
-      select: { gracePeriodMinutes: true, timeZone: true },
-    });
-    const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
-
-    const approvals = await prisma.timeLogApproval.findMany({
-      where: {
-        cutoffPeriodId: id,
-        timeLogId: { in: timeLogIds },
-        status:    "pending",
-      },
-      include: {
-        timeLog: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                departmentId: true,
-                department: {
-                  select: {
-                    paidBreak: true,
-                    coffeeBreakMaxCount: true,
-                    coffeeBreakMinutes: true,
-                    coffeeBreakPaid: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+    const result = await getApprovalStrategy(companyId).approveBulk(id, timeLogIds, {
+      action, userId, companyId, notes,
     });
 
-    let successCount = 0;
-    let failCount    = 0;
-
-    const companyTz = company?.timeZone || "America/Los_Angeles";
-
-    for (const approval of approvals) {
-      try {
-        const timeLog = approval.timeLog;
-
-        // ── DRIVER_AIDE segment: no snap, trust stored computed segment hours ──
-        if (timeLog.punchType === "DRIVER_AIDE") {
-          try { await computeTimeLogSummary(timeLog.id); } catch (_) {}
-
-          const fresh = await prisma.timeLog.findUnique({
-            where:  { id: timeLog.id },
-            select: { driverAmSegmentHours: true, regularSegmentHours: true, driverPmSegmentHours: true },
-          });
-          const segHoursMap = { driver_am: fresh?.driverAmSegmentHours, regular: fresh?.regularSegmentHours, driver_pm: fresh?.driverPmSegmentHours };
-          const segHours = segHoursMap[approval.segmentType];
-
-          await prisma.timeLogApproval.update({
-            where: { id: approval.id },
-            data: {
-              status: "approved", approvedBy: userId, approvedAt: new Date(),
-              approvedClockIn: new Date(timeLog.timeIn),
-              approvedClockOut: timeLog.timeOut ? new Date(timeLog.timeOut) : null,
-              scheduledHours: segHours != null ? parseFloat(segHours.toString()) : null,
-              actualHours:    segHours != null ? parseFloat(segHours.toString()) : null,
-              ...(notes && { notes }),
-            },
-          });
-          successCount++;
-          continue;
-        }
-
-        // ── REGULAR punch: snap then recompute ──
-        const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
-        const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
-
-        const userShift = await fetchScheduleForDate(
-          timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
-        );
-
-        let finalClockIn  = new Date(timeLog.timeIn);
-        let finalClockOut = timeLog.timeOut ? new Date(timeLog.timeOut) : null;
-        let scheduledHours = null;
-
-        if (userShift?.shift) {
-          const startTime = userShift.customStartTime || userShift.shift.startTime;
-          const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-          const tz        = userShift.shift.timeZone || companyTz;
-
-          const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
-          const scheduledClockOut = combineDateTime(localDateStr, endTime, tz);
-          if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
-
-          if (finalClockIn > scheduledClockIn) {
-            const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
-            finalClockIn = lateMinutes <= gracePeriodMinutes ? scheduledClockIn : finalClockIn;
-          } else {
-            finalClockIn = scheduledClockIn;
-          }
-          finalClockOut = finalClockOut
-            ? (finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut)
-            : scheduledClockOut;
-
-          scheduledHours = calculateHours(finalClockIn, finalClockOut);
-        }
-
-        const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
-
-        await prisma.timeLog.update({
-          where: { id: timeLog.id },
-          data: {
-            originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
-            originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
-            timeIn: finalClockIn, timeOut: finalClockOut, isApproved: true,
-          },
-        });
-
-        try { await computeTimeLogSummary(timeLog.id); } catch (_) {}
-
-        await prisma.timeLogApproval.update({
-          where: { id: approval.id },
-          data: {
-            status: "approved", approvedBy: userId, approvedAt: new Date(),
-            approvedClockIn: finalClockIn, approvedClockOut: finalClockOut,
-            scheduledHours: scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : null,
-            actualHours:    actualHours    ? parseFloat(actualHours.toFixed(2))    : null,
-            ...(notes && { notes }),
-          },
-        });
-
-        successCount++;
-      } catch (err) {
-        console.error(`❌ Bulk approve failed for ${approval.id}:`, err.message);
-        failCount++;
-      }
-    }
-
-    console.log(`[✅ Bulk approve] ${successCount} approved, ${failCount} failed`);
-
-    return res.status(200).json({
-      message: `${successCount} time log(s) approved successfully.${failCount > 0 ? ` ${failCount} failed.` : ""}`,
-      data: { approved: successCount, failed: failCount },
-    });
+    return res.status(200).json(result);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     console.error("❌ bulkUpdateApprovals:", error);
     return res.status(500).json({ message: "Internal server error.", error: error.message });
   }
@@ -1569,15 +1179,8 @@ const bulkUpdateApprovals = async (req, res) => {
 
 /**
  * PATCH /api/cutoff-periods/:id/approvals/:approvalId/conflict
- * ✅ NEW: Resolve a punch vs approved leave conflict
- *
- * choice === 'punch':
- *   - Approve the punch (apply snap rules)
- *   - Cancel the leave for that day and return the credit
- *
- * choice === 'leave':
- *   - Exclude the punch (with auto-reason)
- *   - Leave record stays as-is
+ * Resolve a punch vs approved leave conflict.
+ * Dispatches to the company-type strategy — DayCare or B&C.
  */
 const resolveConflict = async (req, res) => {
   try {
@@ -1598,213 +1201,16 @@ const resolveConflict = async (req, res) => {
       return res.status(400).json({ message: `Cannot modify a ${cutoffPeriod.status} cutoff period.` });
     }
 
-    const approval = await prisma.timeLogApproval.findUnique({
-      where: { id: approvalId },
-      include: {
-        timeLog: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                departmentId: true,
-                department: {
-                  select: {
-                    paidBreak: true,
-                    coffeeBreakMaxCount: true,
-                    coffeeBreakMinutes: true,
-                    coffeeBreakPaid: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+    const result = await getApprovalStrategy(companyId).resolveConflict(approvalId, {
+      cutoffPeriodId: id,
+      choice, userId, companyId,
     });
 
-    if (!approval || approval.cutoffPeriodId !== id) {
-      return res.status(404).json({ message: "Approval record not found." });
-    }
-
-    if (approval.status !== "pending") {
-      return res.status(400).json({ message: `Cannot resolve — record is already ${approval.status}.` });
-    }
-
-    const timeLog = approval.timeLog;
-
-    // Fetch company settings up front — needed for timezone in both branches
-    const company = await prisma.company.findUnique({
-      where: { id: companyId },
-      select: { gracePeriodMinutes: true, timeZone: true },
-    });
-    const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
-    const tzForConflict      = company?.timeZone || "America/Los_Angeles";
-
-    const localDateStr        = moment.tz(timeLog.timeIn, tzForConflict).format("YYYY-MM-DD");
-    const dateOnlyForSchedule = moment.tz(timeLog.timeIn, tzForConflict).startOf("day").toDate();
-
-    // ── HONOR LEAVE: exclude the punch ──
-    if (choice === "leave") {
-      await prisma.timeLogApproval.update({
-        where: { id: approvalId },
-        data: {
-          status:     "excluded",
-          approvedBy: userId,
-          approvedAt: new Date(),
-          notes:      "Conflict resolved — leave takes precedence",
-        },
-      });
-
-      console.log("[✅ Conflict resolved — leave honored]", approvalId);
-
-      return res.status(200).json({
-        message: "Leave honored. Punch excluded from payroll.",
-        data: { choice, leaveKept: true, punchExcluded: true },
-      });
-    }
-
-    // ── HONOR PUNCH: approve the punch + cancel the leave ──
-
-    const userShift = await fetchScheduleForDate(
-      timeLog.userId,
-      dateOnlyForSchedule,
-      timeLog.user?.departmentId,
-      companyId,
-      localDateStr
-    );
-
-    let finalClockIn  = new Date(timeLog.timeIn);
-    let finalClockOut = timeLog.timeOut ? new Date(timeLog.timeOut) : null;
-    let scheduledHours = null;
-
-    if (userShift?.shift) {
-      const startTime = userShift.customStartTime || userShift.shift.startTime;
-      const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-      const tz        = userShift.shift.timeZone || tzForConflict;
-
-      const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
-      const scheduledClockOut = combineDateTime(localDateStr, endTime, tz);
-      if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
-
-      if (finalClockIn > scheduledClockIn) {
-        const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
-        finalClockIn = lateMinutes <= gracePeriodMinutes ? scheduledClockIn : finalClockIn;
-      } else {
-        finalClockIn = scheduledClockIn;
-      }
-
-      finalClockOut = finalClockOut
-        ? (finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut)
-        : scheduledClockOut;
-
-      const grossHours = calculateHours(finalClockIn, finalClockOut);
-      let totalBreakDeductions = 0;
-      const dept = timeLog.user.department;
-      if (dept) {
-        const breakData    = calculateBreakTimes(timeLog, dept);
-        const coffeePolicy = checkCoffeeBreakPolicy(breakData.coffeeBreakMinutes, dept);
-        totalBreakDeductions = getTotalBreakDeductions(breakData, coffeePolicy);
-      }
-      scheduledHours = grossHours - totalBreakDeductions / 60;
-    }
-
-    // Update TimeLog
-    await prisma.timeLog.update({
-      where: { id: timeLog.id },
-      data: {
-        originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
-        originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
-        timeIn:          finalClockIn,
-        timeOut:         finalClockOut,
-        isApproved:      true,
-      },
-    });
-
-    // Recompute derived fields against the conflict-resolved times
-    try {
-      await computeTimeLogSummary(timeLog.id);
-    } catch (computeErr) {
-      console.error(`[resolveConflict] computeTimeLogSummary failed for ${timeLog.id}:`, computeErr.message);
-    }
-
-    // Approve the punch
-    await prisma.timeLogApproval.update({
-      where: { id: approvalId },
-      data: {
-        status:          "approved",
-        approvedBy:      userId,
-        approvedAt:      new Date(),
-        approvedClockIn:  finalClockIn,
-        approvedClockOut: finalClockOut,
-        scheduledHours:   scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : null,
-        notes:            "Conflict resolved — punch takes precedence",
-      },
-    });
-
-    // ✅ Cancel the leave for that day and return the credit
-    // Schema: model is Leave (not LeaveRequest), credit is LeaveBalance.balanceHours
-    let leaveCancelled = false;
-    try {
-      const leave = await prisma.leave.findFirst({
-        where: {
-          userId:    timeLog.userId,
-          status:    "approved",
-          startDate: { lte: new Date(timeLog.timeIn) },
-          endDate:   { gte: new Date(timeLog.timeIn) },
-        },
-      });
-
-      if (leave) {
-        // Cancel the leave record
-        await prisma.leave.update({
-          where: { id: leave.id },
-          data: {
-            status:          "cancelled",
-            approverComments: "Cancelled — conflict resolved in favour of punch during cutoff review",
-          },
-        });
-
-        // Return the leave credit via LeaveBalance
-        // Calculate days covered by this leave that overlap with punch date
-        // Use company defaultShiftHours (default 8h) per day as credit unit
-        try {
-          const leavePolicy = await prisma.leavePolicy.findFirst({
-            where: { companyId, leaveType: leave.leaveType },
-          });
-          if (leavePolicy) {
-            const leaveBalance = await prisma.leaveBalance.findFirst({
-              where: { userId: timeLog.userId, policyId: leavePolicy.id },
-            });
-            if (leaveBalance) {
-              // Return 1 day worth of hours (8h default)
-              const hoursToReturn = 8;
-              await prisma.leaveBalance.update({
-                where: { id: leaveBalance.id },
-                data: { balanceHours: { increment: hoursToReturn } },
-              });
-              console.log("[✅ Leave credit returned]", hoursToReturn, "hours to", timeLog.userId);
-            }
-          }
-        } catch (creditErr) {
-          // Credit return is best-effort — leave cancellation already succeeded
-          console.warn("[⚠️  Could not return leave credit]", creditErr.message);
-        }
-
-        leaveCancelled = true;
-        console.log("[✅ Leave cancelled]", leave.id);
-      }
-    } catch (leaveErr) {
-      // Leave cancellation is best-effort — don't fail the whole operation
-      console.warn("[⚠️  Could not cancel leave record]", leaveErr.message);
-    }
-
-    console.log("[✅ Conflict resolved — punch honored]", approvalId);
-
-    return res.status(200).json({
-      message: `Punch honored. ${leaveCancelled ? "Leave credit returned to employee balance." : "Note: leave record could not be automatically cancelled — please review manually."}`,
-      data: { choice, punchApproved: true, leaveCancelled },
-    });
+    return res.status(200).json(result);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     console.error("❌ resolveConflict:", error);
     return res.status(500).json({ message: "Internal server error.", error: error.message });
   }
@@ -1901,6 +1307,111 @@ const getCutoffSummary = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/cutoff-periods/:id/ot-blocks/:otBlockId
+ * Approve or exclude a computed OT block.
+ */
+const resetApproval = async (req, res) => {
+  try {
+    const { id: cutoffPeriodId, approvalId } = req.params;
+    const companyId = req.user.companyId;
+
+    const cutoffPeriod = await findCutoffForCompany(cutoffPeriodId, companyId);
+    if (!cutoffPeriod) {
+      return res.status(404).json({ message: "Cutoff period not found." });
+    }
+    if (cutoffPeriod.status === "locked" || cutoffPeriod.status === "processed") {
+      return res.status(400).json({ message: `Cannot reset approvals in a ${cutoffPeriod.status} cutoff period.` });
+    }
+
+    const approval = await prisma.timeLogApproval.findUnique({
+      where: { id: approvalId },
+      select: { id: true, cutoffPeriodId: true, status: true, timeLogId: true },
+    });
+    if (!approval || approval.cutoffPeriodId !== cutoffPeriodId) {
+      return res.status(404).json({ message: "Approval not found in this cutoff period." });
+    }
+    if (approval.status !== "approved") {
+      return res.status(400).json({ message: `Only approved records can be reset. Current status: ${approval.status}.` });
+    }
+
+    const updated = await prisma.timeLogApproval.update({
+      where: { id: approvalId },
+      data: {
+        status:           "pending",
+        actualHours:      null,
+        approvedClockIn:  null,
+        approvedClockOut: null,
+        approvedBy:       null,
+        approvedAt:       null,
+        editedHours:      null,
+        scheduledHours:   null,
+      },
+    });
+
+    // Recompute OT — record is no longer approved, so the day total drops
+    recomputeOtForTimeLog(approval.timeLogId, cutoffPeriodId, companyId).catch((e) =>
+      console.error("[OT] recompute failed after reset:", e.message)
+    );
+
+    console.log(`[🔄 Reset] Approval ${approvalId} reset to pending`);
+    return res.status(200).json({ message: "Approval reset to pending.", data: updated });
+  } catch (error) {
+    console.error("❌ resetApproval:", error);
+    return res.status(500).json({ message: "Internal server error.", error: error.message });
+  }
+};
+
+const approveOtBlock = async (req, res) => {
+  try {
+    const { id, otBlockId } = req.params;
+    const { action, notes } = req.body;
+    const userId    = req.user.id;
+    const companyId = req.user.companyId;
+
+    if (!["approve", "exclude"].includes(action)) {
+      return res.status(400).json({ message: "Action must be 'approve' or 'exclude'." });
+    }
+
+    const cutoffPeriod = await findCutoffForCompany(id, companyId);
+    if (!cutoffPeriod) {
+      return res.status(404).json({ message: "Cutoff period not found." });
+    }
+    if (cutoffPeriod.status === "locked" || cutoffPeriod.status === "processed") {
+      return res.status(400).json({ message: `Cannot modify a ${cutoffPeriod.status} cutoff period.` });
+    }
+
+    const block = await prisma.cutoffOtBlock.findUnique({
+      where: { id: otBlockId },
+    });
+    if (!block || block.cutoffPeriodId !== id) {
+      return res.status(404).json({ message: "OT block not found in this cutoff period." });
+    }
+    if (block.status !== "pending") {
+      return res.status(400).json({ message: `Cannot modify an already ${block.status} OT block.` });
+    }
+
+    const updated = await prisma.cutoffOtBlock.update({
+      where: { id: otBlockId },
+      data: {
+        status:     action === "approve" ? "approved" : "excluded",
+        approvedBy: userId,
+        approvedAt: new Date(),
+        ...(notes && { notes }),
+      },
+    });
+
+    console.log(`[✅ OT Block] ${action} — ${otBlockId}`);
+    return res.status(200).json({
+      message: action === "approve" ? "OT block approved." : "OT block excluded from payroll.",
+      data:    updated,
+    });
+  } catch (error) {
+    console.error("❌ approveOtBlock:", error);
+    return res.status(500).json({ message: "Internal server error.", error: error.message });
+  }
+};
+
 module.exports = {
   createCutoffPeriod,
   getCutoffPeriods,
@@ -1915,4 +1426,6 @@ module.exports = {
   updateSingleApproval,
   resolveConflict,
   getCutoffSummary,
+  approveOtBlock,
+  resetApproval,
 };

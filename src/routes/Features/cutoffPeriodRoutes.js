@@ -23,6 +23,8 @@ const {
   updateSingleApproval,
   resolveConflict,
   getCutoffSummary,
+  approveOtBlock,
+  resetApproval,
 } = require("@controllers/Features/cutoffPeriodController");
 
 // ============================================================================
@@ -100,6 +102,35 @@ router.patch(
   authenticate,
   authorizeRoles("admin", "supervisor", "superadmin"),
   bulkUpdateApprovals
+);
+
+/**
+ * @route   PATCH /api/cutoff-periods/:id/ot-blocks/:otBlockId
+ * @desc    Approve or exclude a computed OT block (B&C only)
+ * @body    { action: 'approve' | 'exclude', notes?: string }
+ * @access  Admin, Supervisor, Superadmin
+ * NOTE: Must be before /:id/approvals/:approvalId to avoid route collision
+ */
+router.patch(
+  "/:id/ot-blocks/:otBlockId",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  approveOtBlock
+);
+
+/**
+ * @route   PATCH /api/cutoff-periods/:id/approvals/:approvalId/reset
+ * @desc    Reset a single approved punch back to pending — clears actualHours,
+ *          approvedClockIn/Out, and approval metadata. Raw timeIn/timeOut untouched.
+ *          OT block for the day is recomputed automatically.
+ * @access  Admin, Supervisor, Superadmin
+ * NOTE: Must be before /:id/approvals/:approvalId
+ */
+router.patch(
+  "/:id/approvals/:approvalId/reset",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  resetApproval
 );
 
 /**
