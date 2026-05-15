@@ -392,6 +392,8 @@ model User {
   payrollDetails           EmployeePayrollDetails?
   createdCutoffPeriods     CutoffPeriod[]
   approvedTimeLogs         TimeLogApproval[]
+  otBlocks                 CutoffOtBlock[]  @relation("OtBlockUser")
+  approvedOtBlocks         CutoffOtBlock[]  @relation("OtBlockApprover")
   requestLogs              RequestLog[]
   feedbacks                Feedback[]
   tokenVersion             Int      @default(0)
@@ -925,11 +927,34 @@ model CutoffPeriod {
   company         Company            @relation(fields: [companyId], references: [id], onDelete: Cascade) // ✅ ADD THIS
   department      Department?        @relation(fields: [departmentId], references: [id], onDelete: SetNull) // ✅ ADD THIS
   approvals       TimeLogApproval[]
+  otBlocks        CutoffOtBlock[]
   creator         User               @relation(fields: [createdBy], references: [id])
-  
+
   // Indexes
   @@index([companyId, departmentId, periodStart]) // ✅ ADD THIS
   @@index([companyId, status]) // ✅ ADD THIS
+}
+
+model CutoffOtBlock {
+  id             String    @id @default(cuid())
+  cutoffPeriodId String
+  userId         String
+  date           DateTime  @db.Date
+  otHours        Decimal   @db.Decimal(6, 2)
+  status         String    @default("pending") // "pending", "approved", "excluded"
+  approvedBy     String?
+  approvedAt     DateTime? @db.Timestamptz(6)
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  cutoffPeriod   CutoffPeriod @relation(fields: [cutoffPeriodId], references: [id], onDelete: Cascade)
+  user           User         @relation("OtBlockUser",     fields: [userId],     references: [id])
+  approver       User?        @relation("OtBlockApprover", fields: [approvedBy], references: [id])
+
+  @@unique([cutoffPeriodId, userId, date])
+  @@index([cutoffPeriodId])
+  @@index([userId])
 }
 
 model DepartmentCutoffSettings {
@@ -1372,4 +1397,5 @@ enum PunchType {
   DRIVER_AIDE_AM
   DRIVER_AIDE_PM
   DRIVER_AIDE
+  TRAINING
 }
