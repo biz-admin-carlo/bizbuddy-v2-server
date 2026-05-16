@@ -620,7 +620,7 @@ model Department {
   users                   User[]                   @relation("DepartmentUsers")
   requestLogs             RequestLog[]
   cutoffPeriods           CutoffPeriod[]
-  cutoffSettings          DepartmentCutoffSettings?
+  cutoffSettings          DepartmentCutoffSettings[]
 
   @@index([companyId])
   @@index([companyId, supervisorId])
@@ -960,20 +960,20 @@ model CutoffOtBlock {
 model DepartmentCutoffSettings {
   id                 String     @id @default(cuid())
   companyId          String
-  departmentId       String     @unique  // ✅ One config per department
+  departmentId       String?    // null = company-wide setting
   frequency          String     // "bi-weekly", "bi-monthly", "monthly"
   startDate          DateTime   @db.Date
   paymentOffsetDays  Int        @default(5)
   isActive           Boolean    @default(true)
   createdAt          DateTime   @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime   @updatedAt @db.Timestamptz(6)
-  
+
   // Relations
   company            Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  department         Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  
+  department         Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
   // Indexes
-  @@index([companyId, departmentId])
+  @@unique([companyId, departmentId])
 }
 
 model TimeLogApproval {

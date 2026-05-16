@@ -616,7 +616,7 @@ const getCompanyTimeLogs = async (req, res) => {
     // stored in UTC are not cut off at UTC midnight.
     const company = await prisma.company.findUnique({
       where:  { id: companyId },
-      select: { timeZone: true },
+      select: { timeZone: true, dailyOtThresholdHours: true },
     });
     const tz   = company?.timeZone || "UTC";
     const from = req.query.from ? moment.tz(req.query.from, "YYYY-MM-DD", tz).startOf("day").toDate() : null;
@@ -733,6 +733,35 @@ const getCompanyTimeLogs = async (req, res) => {
 
     // ── shiftToday — use company timezone for day boundaries ──────────────────
     const isBnC = BNC_COMPANY_IDS.has(companyId);
+
+    // ── BNC: fetch OT blocks for the queried date range ───────────────────────
+    let otBlocks = [];
+    if (isBnC) {
+      const otBlockWhere = { cutoffPeriod: { companyId } };
+      if (from || to) {
+        otBlockWhere.date = {};
+        if (from) otBlockWhere.date.gte = new Date(req.query.from);
+        if (to)   otBlockWhere.date.lte = new Date(req.query.to);
+      }
+      if (employeeId)   otBlockWhere.userId = employeeId;
+      if (departmentId) otBlockWhere.user   = { departmentId };
+
+      const rawBlocks = await prisma.cutoffOtBlock.findMany({
+        where:   otBlockWhere,
+        orderBy: [{ date: "asc" }],
+        select:  { id: true, userId: true, date: true, otHours: true, status: true, approvedAt: true, notes: true },
+      });
+
+      otBlocks = rawBlocks.map((b) => ({
+        id:         b.id,
+        userId:     b.userId,
+        date:       b.date.toISOString().slice(0, 10),
+        otHours:    parseFloat(b.otHours),
+        status:     b.status,
+        approvedAt: b.approvedAt ? b.approvedAt.toISOString() : null,
+        notes:      b.notes ?? null,
+      }));
+    }
     const rows = logs.map((l) => ({
       id:                   l.id,
       userId:               l.user.id,
@@ -880,6 +909,10 @@ const getCompanyTimeLogs = async (req, res) => {
     return res.status(200).json({
       message:     "Time logs retrieved.",
       companyType: isBnC ? "BNC" : "DAYCARE",
+      ...(isBnC && {
+        dailyOtThresholdHours: parseFloat(company?.dailyOtThresholdHours ?? 8),
+        otBlocks,
+      }),
       data:        rows,
       pagination: {
         total,
