@@ -653,15 +653,23 @@ const deleteCutoffPeriod = async (req, res) => {
 // Safe to call multiple times — uses skipDuplicates.
 // Handles both department-scoped and company-wide cutoffs.
 // ─────────────────────────────────────────────────────────────────────────────
-async function syncApprovalRecords(cutoffPeriod, companyId) {
+async function syncApprovalRecords(cutoffPeriod, companyId, companyTimezone = "UTC") {
   const { id: cutoffPeriodId, periodStart, periodEnd, departmentId } = cutoffPeriod;
 
   const userWhere = { companyId };
   if (departmentId) userWhere.departmentId = departmentId;
 
+  // periodEnd is stored as UTC midnight of the last calendar day (e.g., 2026-05-03T00:00:00Z).
+  // We interpret that UTC date string as the intended calendar date and extend it to end-of-day
+  // in the company's local timezone. This correctly captures cross-midnight-UTC shifts that
+  // started on the final local day (e.g., a 10 PM PDT punch has UTC timestamp 2026-05-04T05:xx).
+  // Using setUTCHours would stop at 2026-05-03T23:59:59Z = 4:59 PM PDT, missing those shifts.
+  const endDateStr  = new Date(periodEnd).toISOString().slice(0, 10); // "2026-05-03"
+  const periodEndEOD = moment.tz(endDateStr, companyTimezone).endOf("day").toDate();
+
   const timeLogs = await prisma.timeLog.findMany({
     where: {
-      timeIn:  { gte: periodStart, lte: periodEnd },
+      timeIn:  { gte: periodStart, lte: periodEndEOD },
       timeOut: { not: null },
       user:    userWhere,
     },
@@ -744,7 +752,13 @@ const syncCutoffApprovals = async (req, res) => {
       });
     }
 
-    const created = await syncApprovalRecords(cutoffPeriod, companyId);
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { timeZone: true },
+    });
+    const companyTimezone = company?.timeZone || "UTC";
+
+    const created = await syncApprovalRecords(cutoffPeriod, companyId, companyTimezone);
 
     const total = await prisma.timeLogApproval.count({
       where: { cutoffPeriodId: id },
@@ -779,6 +793,17 @@ const getCutoffApprovals = async (req, res) => {
       return res.status(404).json({ message: "Cutoff period not found." });
     }
 
+    // Fetch company settings up front — companyTimezone is needed by the auto-sync
+    // EOD calculation before any other company-dependent logic runs.
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { gracePeriodMinutes: true, timeZone: true, otBasis: true, dailyOtThresholdHours: true },
+    });
+    const gracePeriodMinutes    = company?.gracePeriodMinutes ?? 15;
+    const companyTimezone       = company?.timeZone || "Asia/Manila";
+    const otBasis               = company?.otBasis || "daily";
+    const dailyOtThresholdHours = parseFloat(company?.dailyOtThresholdHours ?? 8);
+
     // ✅ AUTO-SYNC: if this is an open cutoff with no approval records yet,
     // create them now. Covers manually created cutoffs and backfilled periods.
     if (cutoffPeriod.status === "open") {
@@ -786,7 +811,7 @@ const getCutoffApprovals = async (req, res) => {
         where: { cutoffPeriodId: id },
       });
       if (existingCount === 0) {
-        await syncApprovalRecords(cutoffPeriod, companyId);
+        await syncApprovalRecords(cutoffPeriod, companyId, companyTimezone);
       }
     }
 
@@ -800,15 +825,6 @@ const getCutoffApprovals = async (req, res) => {
         console.error("[OT] recomputeAllOtForCutoff on load failed:", e.message);
       }
     }
-
-    const company = await prisma.company.findUnique({
-      where: { id: companyId },
-      select: { gracePeriodMinutes: true, timeZone: true, otBasis: true, dailyOtThresholdHours: true },
-    });
-    const gracePeriodMinutes    = company?.gracePeriodMinutes ?? 15;
-    const companyTimezone       = company?.timeZone || "Asia/Manila";
-    const otBasis               = company?.otBasis || "daily";
-    const dailyOtThresholdHours = parseFloat(company?.dailyOtThresholdHours ?? 8);
 
     // ✅ When filtering by 'excluded', also include legacy 'rejected'
     let statusFilter;

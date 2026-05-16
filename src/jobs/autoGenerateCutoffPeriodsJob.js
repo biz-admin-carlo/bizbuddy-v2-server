@@ -1,23 +1,27 @@
 // src/jobs/autoGenerateCutoffPeriodsJob.js
 //
-// Runs nightly at 2:00 AM. For each active DepartmentCutoffSettings, checks how
-// many open future cutoff periods exist. If fewer than MIN_UPCOMING_PERIODS, generates
-// the next GENERATE_MONTHS_AHEAD months. Deduplicates against existing periods.
+// Runs nightly at 2:00 AM. For each active DepartmentCutoffSettings:
+//   1. Find the latest existing period by periodEnd.
+//   2. If a period starting on latestPeriodEnd + 1 already exists → skip.
+//   3. If latestPeriodEnd is within LOOKAHEAD_DAYS of today → create exactly one
+//      next period, carrying the span from the previous period (Option A).
 //
 // createdBy is set to the company's first admin user — this is a system action
 // taken on behalf of the company, and the field is non-nullable in the schema.
 
-const { prisma }              = require("@config/connection");
-const { generatePeriodDates } = require("@services/Cutoff/cutoffGenerationService");
+const { prisma } = require("@config/connection");
 
-const MIN_UPCOMING_PERIODS  = 2;
-const GENERATE_MONTHS_AHEAD = 3;
+// Generate the next period this many days before the current one ends.
+const LOOKAHEAD_DAYS = 3;
 
 async function autoGenerateCutoffPeriodsJob() {
   console.log("\n📅 [AUTO CUTOFF GEN] Running...");
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  const lookaheadDate = new Date(today);
+  lookaheadDate.setDate(lookaheadDate.getDate() + LOOKAHEAD_DAYS);
 
   const allSettings = await prisma.departmentCutoffSettings.findMany({
     where:   { isActive: true },
@@ -32,8 +36,8 @@ async function autoGenerateCutoffPeriodsJob() {
   // Batch-fetch one admin per company to satisfy the non-nullable createdBy relation.
   const companyIds = [...new Set(allSettings.map((s) => s.companyId))];
   const admins = await prisma.user.findMany({
-    where:  { companyId: { in: companyIds }, role: { in: ["admin", "superadmin"] } },
-    select: { id: true, companyId: true },
+    where:    { companyId: { in: companyIds }, role: { in: ["admin", "superadmin"] } },
+    select:   { id: true, companyId: true },
     distinct: ["companyId"],
   });
   const adminByCompany = Object.fromEntries(admins.map((a) => [a.companyId, a.id]));
@@ -43,86 +47,85 @@ async function autoGenerateCutoffPeriodsJob() {
 
   for (const settings of allSettings) {
     try {
-      const adminId = adminByCompany[settings.companyId];
+      const deptLabel = settings.department?.name ?? "No Department";
+      const adminId   = adminByCompany[settings.companyId];
+
       if (!adminId) {
-        console.warn(`[AUTO CUTOFF GEN] ⚠️  No admin found for company ${settings.companyId} — skipping ${settings.department.name}`);
+        console.warn(`[AUTO CUTOFF GEN] ⚠️  No admin for company ${settings.companyId} — skipping ${deptLabel}`);
         continue;
       }
 
-      // Count open periods that haven't ended yet.
-      const upcomingCount = await prisma.cutoffPeriod.count({
+      // 1. Find the latest period for this department.
+      const latest = await prisma.cutoffPeriod.findFirst({
+        where:   { companyId: settings.companyId, departmentId: settings.departmentId },
+        orderBy: { periodEnd: "desc" },
+      });
+
+      if (!latest) {
+        console.log(`[AUTO CUTOFF GEN] ⏭  ${deptLabel}: no existing periods — skipping.`);
+        totalSkipped++;
+        continue;
+      }
+
+      // 2. Check if the next period already exists.
+      // Use UTC methods — periodEnd is stored as UTC midnight, and local-time
+      // date arithmetic (getDate/setDate) shifts the day in non-UTC timezones.
+      const nextStart = new Date(latest.periodEnd);
+      nextStart.setUTCDate(nextStart.getUTCDate() + 1);
+      nextStart.setUTCHours(0, 0, 0, 0);
+
+      const alreadyExists = await prisma.cutoffPeriod.findFirst({
         where: {
           companyId:    settings.companyId,
           departmentId: settings.departmentId,
-          periodEnd:    { gte: today },
-          status:       "open",
+          periodStart:  nextStart,
         },
       });
 
-      if (upcomingCount >= MIN_UPCOMING_PERIODS) {
+      if (alreadyExists) {
         totalSkipped++;
         continue;
       }
 
-      // generatePeriodDates is a pure function — no DB, safe to call directly.
-      const periods = generatePeriodDates(
-        settings.startDate,
-        settings.frequency,
-        settings.paymentOffsetDays,
-        GENERATE_MONTHS_AHEAD,
-        false  // future only — never backfill from a cron job
-      );
+      // 3. Only generate if the latest period ends within the lookahead window.
+      const latestEnd = new Date(latest.periodEnd);
+      latestEnd.setUTCHours(0, 0, 0, 0);
 
-      if (periods.length === 0) {
+      if (latestEnd > lookaheadDate) {
         totalSkipped++;
         continue;
       }
 
-      // Dedup: skip any periodStart that already exists for this department.
-      const existing = await prisma.cutoffPeriod.findMany({
-        where: {
-          companyId:    settings.companyId,
-          departmentId: settings.departmentId,
-          periodStart:  { in: periods.map((p) => new Date(p.periodStart)) },
-        },
-        select: { periodStart: true },
-      });
+      // 4. Carry the span from the previous period (Option A).
+      const prevStart  = new Date(latest.periodStart);
+      const prevEnd    = new Date(latest.periodEnd);
+      const spanMs     = prevEnd.getTime() - prevStart.getTime();
+      const nextEnd    = new Date(nextStart.getTime() + spanMs);
+      const nextPayment = new Date(nextEnd);
+      nextPayment.setUTCDate(nextPayment.getUTCDate() + settings.paymentOffsetDays);
 
-      const existingStarts = new Set(
-        existing.map((p) => p.periodStart.toISOString().slice(0, 10))
-      );
-
-      const newPeriods = periods.filter(
-        (p) => !existingStarts.has(new Date(p.periodStart).toISOString().slice(0, 10))
-      );
-
-      if (newPeriods.length === 0) {
-        totalSkipped++;
-        continue;
-      }
-
-      await prisma.cutoffPeriod.createMany({
-        data: newPeriods.map((period) => ({
+      await prisma.cutoffPeriod.create({
+        data: {
           companyId:       settings.companyId,
           departmentId:    settings.departmentId,
-          periodStart:     new Date(period.periodStart),
-          periodEnd:       new Date(period.periodEnd),
-          paymentDate:     new Date(period.paymentDate),
+          periodStart:     nextStart,
+          periodEnd:       nextEnd,
+          paymentDate:     nextPayment,
           frequency:       settings.frequency,
           status:          "open",
           isAutoGenerated: true,
           createdBy:       adminId,
-        })),
+        },
       });
 
-      totalCreated += newPeriods.length;
-      console.log(`[AUTO CUTOFF GEN] ✅ ${settings.department.name}: +${newPeriods.length} period(s)`);
+      totalCreated++;
+      console.log(`[AUTO CUTOFF GEN] ✅ ${deptLabel}: ${nextStart.toISOString().slice(0, 10)} – ${nextEnd.toISOString().slice(0, 10)}`);
     } catch (err) {
-      console.error(`[AUTO CUTOFF GEN] ❌ ${settings.department.name}:`, err.message);
+      console.error(`[AUTO CUTOFF GEN] ❌ ${settings.department?.name ?? "No Department"}:`, err.message);
     }
   }
 
-  console.log(`[AUTO CUTOFF GEN] Done — ${totalCreated} created, ${totalSkipped} departments already covered.`);
+  console.log(`[AUTO CUTOFF GEN] Done — ${totalCreated} created, ${totalSkipped} skipped.`);
 }
 
 module.exports = autoGenerateCutoffPeriodsJob;

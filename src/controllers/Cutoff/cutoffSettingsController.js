@@ -33,7 +33,7 @@ const getDepartmentSettings = async (req, res) => {
     // Add employee count to each setting
     const settingsWithStats = settings.map(setting => ({
       ...setting,
-      employeeCount: setting.department.users.length
+      employeeCount: setting.department?.users?.length ?? 0
     }));
     
     res.json({ 
@@ -59,12 +59,12 @@ const getDepartmentSetting = async (req, res) => {
     const { companyId } = req.user;
     const { departmentId } = req.params;
     
-    const setting = await prisma.departmentCutoffSettings.findUnique({
-      where: { departmentId },
+    const setting = await prisma.departmentCutoffSettings.findFirst({
+      where: { companyId, departmentId: departmentId || null },
       include: {
         department: {
-          select: { 
-            id: true, 
+          select: {
+            id: true,
             name: true,
             users: { select: { id: true } }
           }
@@ -72,18 +72,18 @@ const getDepartmentSetting = async (req, res) => {
       }
     });
 
-    if (!setting || setting.companyId !== companyId) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Department cutoff settings not found' 
+    if (!setting) {
+      return res.status(404).json({
+        success: false,
+        message: 'Department cutoff settings not found'
       });
     }
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       data: {
         ...setting,
-        employeeCount: setting.department.users.length
+        employeeCount: setting.department?.users?.length ?? 0
       }
     });
   } catch (error) {
@@ -105,11 +105,11 @@ const saveDepartmentSettings = async (req, res) => {
     const { companyId, id: userId } = req.user;
     const { departmentId, frequency, startDate, paymentOffsetDays } = req.body;
     
-    // Validate required fields
-    if (!departmentId || !frequency || !startDate) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Department, frequency, and start date are required' 
+    // Validate required fields (departmentId is optional — null = company-wide)
+    if (!frequency || !startDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Frequency and start date are required'
       });
     }
 
@@ -131,24 +131,25 @@ const saveDepartmentSettings = async (req, res) => {
       });
     }
     
-    // Check if department exists and belongs to company
-    const department = await prisma.department.findFirst({
-      where: { 
-        id: departmentId, 
-        companyId 
-      }
-    });
-    
-    if (!department) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Department not found or does not belong to your company' 
+    // Check if department exists and belongs to company (skip for company-wide)
+    let department = null;
+    if (departmentId) {
+      department = await prisma.department.findFirst({
+        where: { id: departmentId, companyId }
       });
+      if (!department) {
+        return res.status(404).json({
+          success: false,
+          message: 'Department not found or does not belong to your company'
+        });
+      }
     }
-    
+
+    const resolvedDeptId = departmentId || null;
+
     // Upsert settings (create or update)
     const settings = await prisma.departmentCutoffSettings.upsert({
-      where: { departmentId },
+      where: { companyId_departmentId: { companyId, departmentId: resolvedDeptId } },
       update: {
         frequency,
         startDate: new Date(startDate),
@@ -158,22 +159,21 @@ const saveDepartmentSettings = async (req, res) => {
       create: {
         id: `dept_cutoff_${Date.now()}`,
         companyId,
-        departmentId,
+        departmentId: resolvedDeptId,
         frequency,
         startDate: new Date(startDate),
         paymentOffsetDays: offset
       },
       include: {
-        department: {
-          select: { id: true, name: true }
-        }
+        department: { select: { id: true, name: true } }
       }
     });
-    
-    res.json({ 
-      success: true, 
+
+    const label = department?.name ?? "No Department";
+    res.json({
+      success: true,
       data: settings,
-      message: `Cutoff settings saved for ${department.name}` 
+      message: `Cutoff settings saved for ${label}`
     });
   } catch (error) {
     console.error('Error saving department settings:', error);
@@ -195,24 +195,21 @@ const deactivateDepartmentSettings = async (req, res) => {
     const { departmentId } = req.params;
     
     // Verify ownership
-    const setting = await prisma.departmentCutoffSettings.findUnique({
-      where: { departmentId }
+    const setting = await prisma.departmentCutoffSettings.findFirst({
+      where: { companyId, departmentId: departmentId || null }
     });
 
-    if (!setting || setting.companyId !== companyId) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Department cutoff settings not found' 
+    if (!setting) {
+      return res.status(404).json({
+        success: false,
+        message: 'Department cutoff settings not found'
       });
     }
-    
+
     // Soft delete (deactivate)
     await prisma.departmentCutoffSettings.update({
-      where: { departmentId },
-      data: { 
-        isActive: false,
-        updatedAt: new Date()
-      }
+      where: { id: setting.id },
+      data: { isActive: false, updatedAt: new Date() }
     });
     
     res.json({ 
@@ -239,17 +236,17 @@ const previewDepartmentCutoffs = async (req, res) => {
     const { departmentId } = req.params;
     const { months = 3 } = req.query;
     
-    const setting = await prisma.departmentCutoffSettings.findUnique({
-      where: { departmentId },
+    const setting = await prisma.departmentCutoffSettings.findFirst({
+      where: { companyId, departmentId: departmentId || null },
       include: {
         department: { select: { name: true } }
       }
     });
 
-    if (!setting || setting.companyId !== companyId) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Department cutoff settings not found' 
+    if (!setting) {
+      return res.status(404).json({
+        success: false,
+        message: 'Department cutoff settings not found'
       });
     }
 
@@ -263,10 +260,10 @@ const previewDepartmentCutoffs = async (req, res) => {
       parseInt(months)
     );
     
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: {
-        department: setting.department.name,
+        department: setting.department?.name ?? "No Department",
         frequency: setting.frequency,
         startDate: setting.startDate,
         paymentOffsetDays: setting.paymentOffsetDays,

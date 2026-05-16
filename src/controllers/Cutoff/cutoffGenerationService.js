@@ -183,12 +183,12 @@ const generateCutoffPeriods = async (req, res) => {
     } = req.body;
     
     // Get department settings
-    const settings = await prisma.departmentCutoffSettings.findUnique({
-      where: { departmentId },
+    const settings = await prisma.departmentCutoffSettings.findFirst({
+      where: { companyId, departmentId: departmentId ?? null },
       include: { department: true }
     });
-    
-    if (!settings || settings.companyId !== companyId) {
+
+    if (!settings) {
       return res.status(404).json({ 
         success: false, 
         message: 'Department cutoff settings not found. Please configure settings first.' 
