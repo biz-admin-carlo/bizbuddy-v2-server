@@ -4,6 +4,12 @@ const { prisma } = require("@config/connection");
 const { JWT_SECRET } = require("@config/env");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const {
+  getNormalizedDeviceId,
+  getRegisteredDeviceConflict,
+  buildSignInUpdateData,
+  isMobileSignOut,
+} = require("@utils/mobileDeviceLogin");
 
 const getUserEmail = async (req, res) => {
   console.log("## Check User Email and Retrieved Company");
@@ -129,7 +135,7 @@ const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
     // Support both legacy GET (query params) and new POST (request body)
-    const { email, password, companyId } = { ...req.query, ...req.body };
+    const { email, password, companyId, deviceId } = { ...req.query, ...req.body };
 
     if (!email || !password || !companyId) {
       return res.status(400).json({
@@ -159,21 +165,30 @@ const signIn = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials." });
     }
 
-    await prisma.user.update({
+    // Mobile sends deviceId; web omits it and keeps existing behavior.
+    const normalizedDeviceId = getNormalizedDeviceId(deviceId);
+    const deviceConflict = getRegisteredDeviceConflict(user, normalizedDeviceId);
+    if (deviceConflict) {
+      return res.status(deviceConflict.status).json({
+        message: deviceConflict.message,
+        code: deviceConflict.code,
+      });
+    }
+
+    const updatedUser = await prisma.user.update({
       where: { id: user.id },
-      data: { lastLoginAt: new Date() },
+      data: buildSignInUpdateData(normalizedDeviceId),
     });
 
     if (!JWT_SECRET) {
       return res.status(500).json({ message: "JWT secret is not configured." });
     }
 
-    // tokenVersion is now included in the payload so the middleware
-    // can invalidate tokens issued before a "logout all" action.
+    // tokenVersion is included so middleware can invalidate tokens after sign-out / logout-all.
     const tokenPayload = {
       userId: user.id,
       companyId: user.companyId,
-      tokenVersion: user.tokenVersion,
+      tokenVersion: updatedUser.tokenVersion,
     };
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: "30d" });
 
@@ -191,8 +206,30 @@ const signIn = async (req, res) => {
   }
 };
 
-const signOut = (req, res) => {
-  return res.status(200).json({ message: "Signed out successfully." });
+const signOut = async (req, res) => {
+  try {
+    const { id: userId } = req.user;
+    const { deviceId } = { ...req.query, ...req.body };
+    const normalizedDeviceId = getNormalizedDeviceId(deviceId);
+
+    // Mobile sign-out clears the device slot and invalidates the current JWT.
+    // Web sign-out leaves mobile registration untouched.
+    if (isMobileSignOut(normalizedDeviceId)) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          registeredDeviceId: null,
+          registeredDeviceAt: null,
+          tokenVersion: { increment: 1 },
+        },
+      });
+    }
+
+    return res.status(200).json({ message: "Signed out successfully." });
+  } catch (error) {
+    console.error("Error in signOut:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
 };
 
 const updateProfile = async (req, res) => {

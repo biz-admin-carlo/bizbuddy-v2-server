@@ -358,6 +358,8 @@ model User {
   employeeId               String?
   hireDate                 DateTime?                @db.Timestamptz(6)
   deviceToken              String?
+  registeredDeviceId       String?
+  registeredDeviceAt       DateTime?                @db.Timestamptz(6)
   lastLoginAt              DateTime?                @db.Timestamptz(6)
   reviewedDeletionRequests AccountDeletionRequest[] @relation("DeletionReviewer")
   deletionRequests         AccountDeletionRequest[] @relation("DeletionRequester")

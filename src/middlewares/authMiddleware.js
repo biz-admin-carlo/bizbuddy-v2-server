@@ -21,9 +21,12 @@ async function authenticateToken(req, res, next) {
       return res.status(401).json({ message: "User not found." });
     }
 
-    // Reject tokens issued before the last "logout all" action
+    // Reject tokens issued before sign-out, logout-all, or token invalidation
     if (user.tokenVersion !== decoded.tokenVersion) {
-      return res.status(401).json({ message: "Session expired. Please sign in again." });
+      return res.status(401).json({
+        message: "Session ended. Please sign in again.",
+        code: "TOKEN_VERSION_MISMATCH",
+      });
     }
 
     req.user = {
