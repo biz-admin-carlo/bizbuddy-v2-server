@@ -479,6 +479,10 @@ const deleteEmployee = async (req, res) => {
       return res.status(400).json({ error: "You cannot delete your own account." });
     }
     await prisma.userShift.deleteMany({ where: { userId: id } });
+    await prisma.locationRestriction.deleteMany({ where: { userId: id } });
+    await prisma.userActivity.deleteMany({ where: { userId: id } });
+    await prisma.cutoffOtBlock.updateMany({ where: { approvedBy: id }, data: { approvedBy: null } });
+    await prisma.cutoffOtBlock.deleteMany({ where: { userId: id } });
     await prisma.user.delete({ where: { id } });
     return res.status(200).json({ message: "Employee deleted successfully." });
   } catch (error) {

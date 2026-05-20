@@ -2,6 +2,17 @@
 
 const { prisma } = require("@config/connection");
 const { createNotification } = require("@services/notificationService");
+const moment = require("moment-timezone");
+
+// Parses a clock time string in the context of a known timezone.
+// If the string already carries an offset (e.g. +08:00 or Z), it is used as-is.
+// If it is naive (no offset), it is interpreted as local time in companyTimezone.
+function parseClockTime(str, companyTimezone) {
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(str)) {
+    return new Date(str);
+  }
+  return moment.tz(str, companyTimezone).toDate();
+}
 
 const submitRequestPunchLog = async (req, res) => {
   try {
@@ -19,25 +30,42 @@ const submitRequestPunchLog = async (req, res) => {
 
     // Validation
     if (!requestedDate || !requestedClockIn || !requestedClockOut || !approverId) {
-      return res.status(400).json({ 
-        message: "Missing required fields: requestedDate, requestedClockIn, requestedClockOut, approverId" 
+      return res.status(400).json({
+        message: "Missing required fields: requestedDate, requestedClockIn, requestedClockOut, approverId"
       });
     }
+
+    // Resolve company timezone — used to correctly interpret naive clock strings from older clients
+    const company = await prisma.company.findUnique({
+      where: { id: req.user.companyId },
+      select: { timeZone: true },
+    });
+    const companyTimezone = company?.timeZone || "UTC";
+
+    // Parse clock times — naive strings (no offset) are interpreted in company timezone
+    const clockIn  = parseClockTime(requestedClockIn,  companyTimezone);
+    const clockOut = parseClockTime(requestedClockOut, companyTimezone);
+
+    if (isNaN(clockIn) || isNaN(clockOut)) {
+      return res.status(400).json({ message: "Invalid requestedClockIn or requestedClockOut." });
+    }
+
+    // Date-range boundaries anchored to company timezone so the duplicate check
+    // matches the same calendar day the employee intended
+    const dayStart = moment.tz(requestedDate, companyTimezone).startOf("day").toDate();
+    const dayEnd   = moment.tz(requestedDate, companyTimezone).endOf("day").toDate();
 
     // Check if a time log already exists for this date
     const existingLog = await prisma.timeLog.findFirst({
       where: {
         userId,
-        timeIn: {
-          gte: new Date(requestedDate + "T00:00:00"),
-          lt: new Date(new Date(requestedDate).setDate(new Date(requestedDate).getDate() + 1)),
-        },
+        timeIn: { gte: dayStart, lte: dayEnd },
       },
     });
 
     if (existingLog) {
-      return res.status(409).json({ 
-        message: "A punch log already exists for this date. Use 'Contest Times' to modify it instead." 
+      return res.status(409).json({
+        message: "A punch log already exists for this date. Use 'Contest Times' to modify it instead."
       });
     }
 
@@ -51,19 +79,13 @@ const submitRequestPunchLog = async (req, res) => {
     });
 
     if (existingRequest) {
-      return res.status(409).json({ 
-        message: "You already have a pending request for this date." 
+      return res.status(409).json({
+        message: "You already have a pending request for this date."
       });
     }
 
-    // Validate times
-    const clockIn = new Date(requestedClockIn);
-    const clockOut = new Date(requestedClockOut);
-
     if (clockIn >= clockOut) {
-      return res.status(400).json({ 
-        message: "Clock-in time must be before clock-out time." 
-      });
+      return res.status(400).json({ message: "Clock-in time must be before clock-out time." });
     }
 
     // Create the request
