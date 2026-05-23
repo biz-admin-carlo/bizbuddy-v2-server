@@ -171,6 +171,7 @@ async function approveSingle(approvalId, {
     select: { gracePeriodMinutes: true, timeZone: true, defaultShiftHours: true },
   });
   const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
+  const graceMs            = (gracePeriodMinutes * 60 + 59) * 1000;
   const companyTz          = company?.timeZone || "America/Los_Angeles";
   const timeLog            = approval.timeLog;
 
@@ -249,8 +250,8 @@ async function approveSingle(approvalId, {
 
     if (!editedClockIn) {
       if (finalClockIn > scheduledClockIn) {
-        const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
-        finalClockIn = lateMinutes <= gracePeriodMinutes ? scheduledClockIn : finalClockIn;
+        const rawLateMs = finalClockIn - scheduledClockIn;
+        finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
       } else {
         finalClockIn = scheduledClockIn;
       }
@@ -337,6 +338,7 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, userId, company
     select: { gracePeriodMinutes: true, timeZone: true, defaultShiftHours: true },
   });
   const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
+  const graceMs            = (gracePeriodMinutes * 60 + 59) * 1000;
   const companyTz          = company?.timeZone || "America/Los_Angeles";
   const trainingHours      = parseFloat((company?.defaultShiftHours ?? 8).toString());
 
@@ -429,8 +431,8 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, userId, company
         if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
 
         if (finalClockIn > scheduledClockIn) {
-          const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
-          finalClockIn = lateMinutes <= gracePeriodMinutes ? scheduledClockIn : finalClockIn;
+          const rawLateMs = finalClockIn - scheduledClockIn;
+          finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
         } else {
           finalClockIn = scheduledClockIn;
         }
@@ -506,6 +508,7 @@ async function resolveConflict(approvalId, { cutoffPeriodId, choice, userId, com
     select: { gracePeriodMinutes: true, timeZone: true },
   });
   const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
+  const graceMs            = (gracePeriodMinutes * 60 + 59) * 1000;
   const companyTz          = company?.timeZone || "America/Los_Angeles";
 
   // ── Honor leave: exclude the punch ───────────────────────────────────────
@@ -548,8 +551,8 @@ async function resolveConflict(approvalId, { cutoffPeriodId, choice, userId, com
     if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
 
     if (finalClockIn > scheduledClockIn) {
-      const lateMinutes = (finalClockIn - scheduledClockIn) / 60000;
-      finalClockIn = lateMinutes <= gracePeriodMinutes ? scheduledClockIn : finalClockIn;
+      const rawLateMs = finalClockIn - scheduledClockIn;
+      finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
     } else {
       finalClockIn = scheduledClockIn;
     }
