@@ -5,12 +5,14 @@ const router = express.Router();
 const authenticate = require("@middlewares/authMiddleware");
 const { authorizeRoles } = require("@middlewares/roleMiddleware");
 
-const { 
-    getUserShifts, 
+const {
+    getUserShifts,
     getCompanyEmployees,
-    getEmployeeShifts,     
-    getBulkEmployeeShifts,  
-    getCompanyScheduleStats
+    getEmployeeShifts,
+    getBulkEmployeeShifts,
+    getCompanyScheduleStats,
+    updateUserShift,
+    deleteUserShift,
   } = require("@controllers/Features/userShiftController");
 
 router.get("/", authenticate, getUserShifts);
@@ -20,6 +22,8 @@ router.get("/company-employees", authenticate, getCompanyEmployees);
 router.get("/employee/:employeeId", authenticate, authorizeRoles('admin', 'supervisor', 'superadmin'), getEmployeeShifts);
 router.post("/bulk", authenticate, authorizeRoles('admin', 'supervisor', 'superadmin'), getBulkEmployeeShifts);
 router.get("/company-stats", authenticate, authorizeRoles('admin', 'supervisor', 'superadmin'), getCompanyScheduleStats);
+router.put("/:id", authenticate, authorizeRoles('admin', 'supervisor', 'superadmin'), updateUserShift);
+router.delete("/:id", authenticate, authorizeRoles('admin', 'supervisor', 'superadmin'), deleteUserShift);
 
 
 module.exports = router;

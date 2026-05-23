@@ -250,7 +250,7 @@ const createShiftSchedule = async (req, res) => {
     }
 
     // ── Create schedules and shifts inside a single transaction ──────────────
-    const { createdSchedules, totalShifts } = await prisma.$transaction(async (tx) => {
+    const { createdSchedules, totalShifts, scheduleResults } = await prisma.$transaction(async (tx) => {
       // Delete conflicting records first if replacing
       if (conflicts.length > 0 && replaceConflicts) {
         // Using IDs (not userId+date) ensures non-overlapping shifts on the same

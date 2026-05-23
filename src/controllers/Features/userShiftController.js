@@ -345,10 +345,95 @@ const getCompanyScheduleStats = async (req, res) => {
 };
 
 
-module.exports = { 
-  getUserShifts, 
+const updateUserShift = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { companyId } = req.user;
+    const { shiftId } = req.body;
+
+    if (!shiftId) {
+      return res.status(400).json({ message: "shiftId is required." });
+    }
+
+    const userShift = await prisma.userShift.findUnique({
+      where: { id },
+      select: { id: true, user: { select: { companyId: true } } },
+    });
+
+    if (!userShift) {
+      return res.status(404).json({ message: "Shift assignment not found." });
+    }
+
+    if (userShift.user.companyId !== companyId) {
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    const shift = await prisma.shift.findFirst({ where: { id: shiftId, companyId } });
+
+    if (!shift) {
+      return res.status(400).json({ message: "Shift not found." });
+    }
+
+    const updated = await prisma.userShift.update({
+      where: { id },
+      data: { shiftId },
+      include: { shift: true },
+    });
+
+    return res.status(200).json({
+      message: "Shift updated successfully.",
+      data: {
+        ...updated,
+        assignedDate: updated.assignedDate.toISOString().slice(0, 10),
+        shift: {
+          ...updated.shift,
+          startTime: updated.shift.startTime.toISOString(),
+          endTime: updated.shift.endTime.toISOString(),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Error updating user shift:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+const deleteUserShift = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { companyId } = req.user;
+
+    const userShift = await prisma.userShift.findUnique({
+      where: { id },
+      select: { id: true, user: { select: { companyId: true } } },
+    });
+
+    if (!userShift) {
+      return res.status(404).json({ message: "Shift assignment not found." });
+    }
+
+    if (userShift.user.companyId !== companyId) {
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    await prisma.userShift.delete({ where: { id } });
+
+    return res.status(200).json({
+      message: "Shift removed successfully.",
+      data: { id },
+    });
+  } catch (error) {
+    console.error("Error deleting user shift:", error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+module.exports = {
+  getUserShifts,
   getCompanyEmployees,
   getEmployeeShifts,
   getBulkEmployeeShifts,
-  getCompanyScheduleStats
+  getCompanyScheduleStats,
+  updateUserShift,
+  deleteUserShift,
 };
