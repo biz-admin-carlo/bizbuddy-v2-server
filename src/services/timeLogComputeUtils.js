@@ -17,10 +17,52 @@ function resolveTimezone(companyTz) {
   return "America/Los_Angeles";
 }
 
+/**
+ * Calendar YYYY-MM-DD from a @db.Date (stored as midnight UTC).
+ * Do not timezone-shift — that would move e.g. Monday to Sunday in US zones.
+ */
+function dateKeyFromDbDate(date) {
+  return moment.utc(date).format("YYYY-MM-DD");
+}
+
+/** Today’s calendar date in an IANA timezone (for timestamps like `now`). */
+function dateKeyInTz(date, tz) {
+  return moment(date).tz(tz).format("YYYY-MM-DD");
+}
+
+/**
+ * Combines a @db.Date assignedDate with a @db.Time start/end, in the given timezone.
+ */
+function combineAssignedDateWithTimeTz(assignedDate, timeLikeDate, tz) {
+  const dateOnly = dateKeyFromDbDate(assignedDate);
+  const timeStr = timeStrFromDbTime(timeLikeDate);
+  return moment
+    .tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz)
+    .toDate();
+}
+
 function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
   const dateOnly = moment(referenceDate).tz(tz).format("YYYY-MM-DD");
   const timeStr  = timeStrFromDbTime(timeLikeDate);
   return moment.tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz).toDate();
+}
+
+/** 30-minute clock-in reminder window (pure; used by clockInReminderWorker). */
+function evaluateClockInReminder({ assignedDate, startTime, tz, now }) {
+  if (dateKeyFromDbDate(assignedDate) !== dateKeyInTz(now, tz)) {
+    return { shouldRemind: false };
+  }
+  const shiftStart = combineAssignedDateWithTimeTz(assignedDate, startTime, tz);
+  const minutesToStart = (shiftStart.getTime() - now.getTime()) / 60000;
+  if (minutesToStart <= 0) return { shouldRemind: false };
+  if (minutesToStart <= 30 && minutesToStart > 29) {
+    return {
+      shouldRemind: true,
+      shiftStart,
+      minutesRemaining: Math.round(minutesToStart),
+    };
+  }
+  return { shouldRemind: false };
 }
 
 function sumCoffeeBreakMinutes(coffeeBreaks) {
@@ -93,7 +135,11 @@ function matchShiftToWindow(userShifts, timeIn, timeOut, tz) {
 module.exports = {
   timeStrFromDbTime,
   resolveTimezone,
+  dateKeyFromDbDate,
+  dateKeyInTz,
+  combineAssignedDateWithTimeTz,
   combineDateWithTimeTz,
+  evaluateClockInReminder,
   sumCoffeeBreakMinutes,
   lunchBreakMinutes,
   computeSegmentHours,
