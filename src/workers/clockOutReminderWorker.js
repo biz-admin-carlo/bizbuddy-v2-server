@@ -4,32 +4,17 @@ const { prisma } = require("@config/connection");
 const { getIO } = require("@config/socket");
 const { getMessaging } = require("@config/firebase");
 const moment = require("moment-timezone");
-
-function timeStrFromDbTime(timeLikeDate) {
-  const t = new Date(timeLikeDate);
-  const hh = String(t.getUTCHours()).padStart(2, "0");
-  const mm = String(t.getUTCMinutes()).padStart(2, "0");
-  const ss = String(t.getUTCSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
-
-function dateKeyInTz(date, tz) {
-  return moment(date).tz(tz).format("YYYY-MM-DD");
-}
+const {
+  dateKeyFromDbDate,
+  dateKeyInTz,
+  combineAssignedDateWithTimeTz,
+} = require("@services/timeLogComputeUtils");
 
 function normalizeTimezone(preferredTz, fallbackTz) {
   const tz = preferredTz || fallbackTz || "America/Los_Angeles";
   if (moment.tz.zone(tz)) return tz;
   if (fallbackTz && moment.tz.zone(fallbackTz)) return fallbackTz;
   return "America/Los_Angeles";
-}
-
-function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
-  const dateOnly = dateKeyInTz(referenceDate, tz);
-  const timeStr = timeStrFromDbTime(timeLikeDate);
-  return moment
-    .tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz)
-    .toDate();
 }
 
 async function processClockOutReminders() {
@@ -76,7 +61,7 @@ async function processClockOutReminders() {
           const companyTz = await getCompanyTimezone(us.shift?.companyId);
           const tz = normalizeTimezone(us.shift?.timeZone, companyTz);
           if (
-            dateKeyInTz(us.assignedDate, tz) === dateKeyInTz(log.timeIn, tz)
+            dateKeyFromDbDate(us.assignedDate) === dateKeyInTz(log.timeIn, tz)
           ) {
             userShift = us;
             break;
@@ -101,15 +86,13 @@ async function processClockOutReminders() {
 
       const companyTz = await getCompanyTimezone(userShift.shift.companyId);
       const tz = normalizeTimezone(userShift.shift.timeZone, companyTz);
-      const referenceDate = userShift.assignedDate || log.timeIn;
-
-      const shiftStart = combineDateWithTimeTz(
-        referenceDate,
+      const shiftStart = combineAssignedDateWithTimeTz(
+        userShift.assignedDate,
         userShift.shift.startTime,
         tz,
       );
-      let shiftEnd = combineDateWithTimeTz(
-        referenceDate,
+      let shiftEnd = combineAssignedDateWithTimeTz(
+        userShift.assignedDate,
         userShift.shift.endTime,
         tz,
       );

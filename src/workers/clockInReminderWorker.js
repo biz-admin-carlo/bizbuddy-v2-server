@@ -4,30 +4,13 @@ const { prisma } = require("@config/connection");
 const { getIO } = require("@config/socket");
 const { getMessaging } = require("@config/firebase");
 const moment = require("moment-timezone");
-
-function timeStrFromDbTime(timeLikeDate) {
-  const t = new Date(timeLikeDate);
-  const hh = String(t.getUTCHours()).padStart(2, "0");
-  const mm = String(t.getUTCMinutes()).padStart(2, "0");
-  const ss = String(t.getUTCSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
-
-function dateKeyInTz(date, tz) {
-  return moment(date).tz(tz).format("YYYY-MM-DD");
-}
+const { evaluateClockInReminder } = require("@services/timeLogComputeUtils");
 
 function normalizeTimezone(preferredTz, fallbackTz) {
   const tz = preferredTz || fallbackTz || "America/Los_Angeles";
   if (moment.tz.zone(tz)) return tz;
   if (fallbackTz && moment.tz.zone(fallbackTz)) return fallbackTz;
   return "America/Los_Angeles";
-}
-
-function combineDateWithTimeTz(referenceDate, timeLikeDate, tz) {
-  const dateOnly = dateKeyInTz(referenceDate, tz);
-  const timeStr = timeStrFromDbTime(timeLikeDate);
-  return moment.tz(`${dateOnly} ${timeStr}`, "YYYY-MM-DD HH:mm:ss", tz).toDate();
 }
 
 async function processClockInReminders() {
@@ -80,60 +63,58 @@ async function processClockInReminders() {
       const companyTz = await getCompanyTimezone(us.shift?.companyId);
       const tz = normalizeTimezone(us.shift?.timeZone, companyTz);
 
-      // Only consider shifts whose assignedDate matches "today" for that timezone.
-      if (dateKeyInTz(us.assignedDate, tz) !== dateKeyInTz(now, tz)) continue;
+      const evaluation = evaluateClockInReminder({
+        assignedDate: us.assignedDate,
+        startTime: us.shift.startTime,
+        tz,
+        now,
+      });
+      if (!evaluation.shouldRemind) continue;
 
-      const shiftStart = combineDateWithTimeTz(us.assignedDate, us.shift.startTime, tz);
-      const minutesToStart = (shiftStart.getTime() - now.getTime()) / 60000;
-      if (minutesToStart <= 0) continue; // already started
+      const { shiftStart, minutesRemaining } = evaluation;
+      const marker = `clockinReminder:${us.id}`; // dedupe by userShift id
+      const existing = await prisma.userActivity.findFirst({
+        where: { userId: us.userId, activityDescription: marker },
+      });
+      if (existing) continue;
 
-      // Fire around 30 minutes before start
-      if (minutesToStart <= 30 && minutesToStart > 29) {
-        const marker = `clockinReminder:${us.id}`; // dedupe by userShift id
-        const existing = await prisma.userActivity.findFirst({
-          where: { userId: us.userId, activityDescription: marker },
-        });
-        if (existing) continue;
+      io.to(us.userId).emit("clockInReminder", {
+        userId: us.userId,
+        userShiftId: us.id,
+        shiftStart: shiftStart.toISOString(),
+        minutesRemaining,
+        message:
+          "Your shift starts in 30 minutes. Please remember to clock in.",
+      });
 
-        const minutesRemaining = Math.round(minutesToStart);
-        io.to(us.userId).emit("clockInReminder", {
-          userId: us.userId,
-          userShiftId: us.id,
-          shiftStart: shiftStart.toISOString(),
-          minutesRemaining,
-          message:
-            "Your shift starts in 30 minutes. Please remember to clock in.",
-        });
-
-        // Send FCM push if possible
-        const token = us.user?.deviceToken;
-        if (messaging && token) {
-          try {
-            await messaging.send({
-              token,
-              notification: {
-                title: "Shift starting soon",
-                body: "Your shift starts in 30 minutes. Please remember to clock in.",
-              },
-              data: {
-                userShiftId: String(us.id),
-                userId: String(us.userId),
-                shiftStart: shiftStart.toISOString(),
-                minutesRemaining: String(minutesRemaining),
-                type: "clockInReminder",
-                targetScreen: "timekeeping-punch",
-                targetRoute: "/(tabs)/(shifts)/timekeeping-punch",
-              },
-            });
-          } catch (pushErr) {
-            console.error("[ClockInReminder] FCM send error", us.id, pushErr);
-          }
+      // Send FCM push if possible
+      const token = us.user?.deviceToken;
+      if (messaging && token) {
+        try {
+          await messaging.send({
+            token,
+            notification: {
+              title: "Shift starting soon",
+              body: "Your shift starts in 30 minutes. Please remember to clock in.",
+            },
+            data: {
+              userShiftId: String(us.id),
+              userId: String(us.userId),
+              shiftStart: shiftStart.toISOString(),
+              minutesRemaining: String(minutesRemaining),
+              type: "clockInReminder",
+              targetScreen: "timekeeping-punch",
+              targetRoute: "/(tabs)/(shifts)/timekeeping-punch",
+            },
+          });
+        } catch (pushErr) {
+          console.error("[ClockInReminder] FCM send error", us.id, pushErr);
         }
-
-        await prisma.userActivity.create({
-          data: { userId: us.userId, activityDescription: marker },
-        });
       }
+
+      await prisma.userActivity.create({
+        data: { userId: us.userId, activityDescription: marker },
+      });
     } catch (err) {
       console.error("[ClockInReminder] Error for userShift", us.id, err);
     }
