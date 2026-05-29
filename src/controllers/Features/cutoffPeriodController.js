@@ -159,6 +159,7 @@ const APPROVAL_INCLUDE = {
       netWorkedHours: true, grossHours: true, scheduledHours: true,
       rawOtMinutes: true, lunchDeductionMinutes: true, totalBreakMinutes: true,
       regularSegmentHours: true, driverAmSegmentHours: true, driverPmSegmentHours: true,
+      isTooEarlyPunch: true,
       calculatedAt: true,
       user: {
         select: {
@@ -275,15 +276,26 @@ const createCutoffPeriod = async (req, res) => {
         timeIn:  { gte: startDate, lte: endDate },
         timeOut: { not: null },
       },
-      select: { id: true, punchType: true },
+      select: { id: true, punchType: true, timeIn: true, userId: true },
     });
 
     if (timeLogs.length > 0) {
+      // Pre-resolve segment boundaries for DRIVER_AIDE logs so segmentStart / segmentEnd
+      // are stored on the approval record at creation time (same as syncApprovalRecords).
+      const driverAideLogs = timeLogs.filter((l) => l.punchType === "DRIVER_AIDE");
+      const segBoundaries  = await resolveDriverAideSegments(driverAideLogs, companyId);
+
       const approvalData = timeLogs.flatMap((log) => {
         if (log.punchType === "DRIVER_AIDE") {
-          return ["driver_am", "regular", "driver_pm"].map((segmentType) => ({
-            id: randomUUID(), timeLogId: log.id, cutoffPeriodId: cutoffPeriod.id, status: "pending", segmentType,
-          }));
+          const segs = segBoundaries[log.id] ?? {};
+          return ["driver_am", "regular", "driver_pm"].map((segmentType) => {
+            const seg = segs[segmentType] ?? null;
+            return {
+              id: randomUUID(), timeLogId: log.id, cutoffPeriodId: cutoffPeriod.id, status: "pending", segmentType,
+              segmentStart: seg?.start ?? null,
+              segmentEnd:   seg?.end   ?? null,
+            };
+          });
         }
         return [{ id: randomUUID(), timeLogId: log.id, cutoffPeriodId: cutoffPeriod.id, status: "pending", segmentType: null }];
       });
@@ -812,6 +824,40 @@ const getCutoffApprovals = async (req, res) => {
       });
       if (existingCount === 0) {
         await syncApprovalRecords(cutoffPeriod, companyId, companyTimezone);
+      } else {
+        // ✅ BACKFILL: update any existing DRIVER_AIDE approval records that were
+        // created before segmentStart/segmentEnd were populated (e.g. via
+        // createCutoffPeriod before this fix). Runs only when null values are found.
+        const nullSegmentApprovals = await prisma.timeLogApproval.findMany({
+          where: {
+            cutoffPeriodId: id,
+            segmentType:    { not: null },
+            segmentStart:   null,
+          },
+          select: { id: true, segmentType: true, timeLogId: true, timeLog: { select: { timeIn: true, userId: true } } },
+        });
+
+        if (nullSegmentApprovals.length > 0) {
+          // Deduplicate to unique timeLogs for batch resolution
+          const uniqueLogs = [...new Map(
+            nullSegmentApprovals.map((a) => [a.timeLogId, { id: a.timeLogId, timeIn: a.timeLog.timeIn, userId: a.timeLog.userId }])
+          ).values()];
+
+          const segBoundaries = await resolveDriverAideSegments(uniqueLogs, companyId);
+
+          await Promise.all(
+            nullSegmentApprovals.map((approval) => {
+              const seg = segBoundaries[approval.timeLogId]?.[approval.segmentType] ?? null;
+              if (!seg) return Promise.resolve();
+              return prisma.timeLogApproval.update({
+                where: { id: approval.id },
+                data:  { segmentStart: seg.start, segmentEnd: seg.end },
+              });
+            })
+          );
+
+          console.log(`[✅ Backfill] Populated segmentStart/segmentEnd for ${nullSegmentApprovals.length} DRIVER_AIDE approval(s) in cutoff ${id}`);
+        }
       }
     }
 
@@ -1160,7 +1206,7 @@ const updateSingleApproval = async (req, res) => {
 const bulkUpdateApprovals = async (req, res) => {
   try {
     const { id } = req.params;
-    const { timeLogIds, action, notes } = req.body;
+    const { timeLogIds, action, approvalMode, notes } = req.body;
     const userId    = req.user.id;
     const companyId = req.user.companyId;
 
@@ -1180,7 +1226,7 @@ const bulkUpdateApprovals = async (req, res) => {
     }
 
     const result = await getApprovalStrategy(companyId).approveBulk(id, timeLogIds, {
-      action, userId, companyId, notes,
+      action, approvalMode, userId, companyId, notes,
     });
 
     return res.status(200).json(result);

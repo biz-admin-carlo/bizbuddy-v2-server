@@ -135,7 +135,7 @@ const APPROVAL_INCLUDE = {
 // ── approveSingle ─────────────────────────────────────────────────────────────
 
 async function approveSingle(approvalId, {
-  cutoffPeriodId, action, userId, companyId,
+  cutoffPeriodId, action, approvalMode, userId, companyId,
   notes, reason, withOT, editedClockIn, editedClockOut,
 }) {
   const approval = await prisma.timeLogApproval.findUnique({
@@ -210,79 +210,108 @@ async function approveSingle(approvalId, {
     };
     const segHours = segHoursMap[approval.segmentType];
 
+    // "schedule" → store the segment window as approved times so the client
+    // can display the cleaned per-segment In/Out after approval.
+    // "raw" (or absent) → store the actual overall punch times.
+    const approvedIn  = approvalMode === "schedule" && approval.segmentStart
+      ? new Date(approval.segmentStart)
+      : new Date(timeLog.timeIn);
+    const approvedOut = approvalMode === "schedule" && approval.segmentEnd
+      ? new Date(approval.segmentEnd)
+      : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
+
     const updated = await prisma.timeLogApproval.update({
       where: { id: approvalId },
       data: {
         status:           "approved",
         approvedBy:       userId,
         approvedAt:       new Date(),
-        approvedClockIn:  new Date(timeLog.timeIn),
-        approvedClockOut: timeLog.timeOut ? new Date(timeLog.timeOut) : null,
+        approvedClockIn:  approvedIn,
+        approvedClockOut: approvedOut,
         scheduledHours:   segHours != null ? parseFloat(segHours.toString()) : null,
         actualHours:      segHours != null ? parseFloat(segHours.toString()) : null,
         ...(notes && { notes }),
       },
     });
-    console.log("[✅ DayCare] Segment approved", approvalId, approval.segmentType);
+    console.log("[✅ DayCare] Segment approved", approvalId, approval.segmentType, approvalMode === "schedule" ? "(segment window)" : "(raw times)");
     return { message: "Segment approved successfully.", data: updated };
   }
 
-  // ── REGULAR: snap to schedule then recompute ──────────────────────────────
-  const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
-  const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
-
-  const userShift = await fetchScheduleForDate(
-    timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
-  );
-
+  // ── REGULAR ───────────────────────────────────────────────────────────────
   let finalClockIn  = editedClockIn  ? new Date(editedClockIn)  : new Date(timeLog.timeIn);
   let finalClockOut = editedClockOut ? new Date(editedClockOut) : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
   let scheduledHours = null;
 
-  if (userShift?.shift) {
-    const startTime = userShift.customStartTime || userShift.shift.startTime;
-    const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-    const tz        = userShift.shift.timeZone  || companyTz;
+  if (approvalMode === "raw") {
+    // ── APPROVE RAW: honour actual punch times, no schedule snapping ──────────
+    // Times are already set to raw timeIn/timeOut above — just compute hours.
+    scheduledHours = finalClockIn && finalClockOut
+      ? calculateHours(finalClockIn, finalClockOut)
+      : null;
 
-    const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
-    const scheduledClockOut = combineDateTime(localDateStr, endTime,   tz);
-    if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
+    // Mark approved; preserve originals but do NOT overwrite timeIn/timeOut.
+    await prisma.timeLog.update({
+      where: { id: timeLog.id },
+      data: {
+        originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
+        originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
+        isApproved:      true,
+      },
+    });
+  } else {
+    // ── APPROVE SCHEDULE (default): snap to shift schedule ────────────────────
+    const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
+    const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
 
-    if (!editedClockIn) {
-      if (finalClockIn > scheduledClockIn) {
-        const rawLateMs = finalClockIn - scheduledClockIn;
-        finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
-      } else {
-        finalClockIn = scheduledClockIn;
-      }
-    }
+    const userShift = await fetchScheduleForDate(
+      timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
+    );
 
-    if (!editedClockOut) {
-      if (finalClockOut) {
-        finalClockOut = finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut;
-        if (withOT && timeLog.timeOut && new Date(timeLog.timeOut) > scheduledClockOut) {
-          finalClockOut = new Date(timeLog.timeOut);
+    if (userShift?.shift) {
+      const startTime = userShift.customStartTime || userShift.shift.startTime;
+      const endTime   = userShift.customEndTime   || userShift.shift.endTime;
+      const tz        = userShift.shift.timeZone  || companyTz;
+
+      const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
+      const scheduledClockOut = combineDateTime(localDateStr, endTime,   tz);
+      if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
+
+      if (!editedClockIn) {
+        if (finalClockIn > scheduledClockIn) {
+          const rawLateMs = finalClockIn - scheduledClockIn;
+          finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
+        } else {
+          finalClockIn = scheduledClockIn;
         }
-      } else {
-        finalClockOut = scheduledClockOut;
       }
+
+      if (!editedClockOut) {
+        if (finalClockOut) {
+          finalClockOut = finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut;
+          if (withOT && timeLog.timeOut && new Date(timeLog.timeOut) > scheduledClockOut) {
+            finalClockOut = new Date(timeLog.timeOut);
+          }
+        } else {
+          finalClockOut = scheduledClockOut;
+        }
+      }
+
+      scheduledHours = calculateHours(finalClockIn, finalClockOut);
     }
 
-    scheduledHours = calculateHours(finalClockIn, finalClockOut);
+    await prisma.timeLog.update({
+      where: { id: timeLog.id },
+      data: {
+        originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
+        originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
+        timeIn:          finalClockIn,
+        timeOut:         finalClockOut,
+        isApproved:      true,
+      },
+    });
   }
 
   const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
-
-  await prisma.timeLog.update({
-    where: { id: timeLog.id },
-    data: {
-      originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
-      originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
-      timeIn:          finalClockIn,
-      timeOut:         finalClockOut,
-      isApproved:      true,
-    },
-  });
 
   try {
     await computeTimeLogSummary(timeLog.id);
@@ -304,13 +333,13 @@ async function approveSingle(approvalId, {
     },
   });
 
-  console.log("[✅ DayCare] Record approved", approvalId, withOT ? "(with OT)" : "");
+  console.log("[✅ DayCare] Record approved", approvalId, approvalMode === "raw" ? "(raw)" : "(schedule)", withOT ? "(with OT)" : "");
   return { message: "Time log approved successfully.", data: updated };
 }
 
 // ── approveBulk ───────────────────────────────────────────────────────────────
 
-async function approveBulk(cutoffPeriodId, timeLogIds, { action, userId, companyId, notes }) {
+async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, userId, companyId, notes }) {
   // ── Exclude / reject ──────────────────────────────────────────────────────
   if (action === "exclude" || action === "reject") {
     const updated = await prisma.timeLogApproval.updateMany({
@@ -392,14 +421,21 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, userId, company
         };
         const segHours = segHoursMap[approval.segmentType];
 
+        const approvedIn  = approvalMode === "schedule" && approval.segmentStart
+          ? new Date(approval.segmentStart)
+          : new Date(timeLog.timeIn);
+        const approvedOut = approvalMode === "schedule" && approval.segmentEnd
+          ? new Date(approval.segmentEnd)
+          : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
+
         await prisma.timeLogApproval.update({
           where: { id: approval.id },
           data: {
             status:           "approved",
             approvedBy:       userId,
             approvedAt:       new Date(),
-            approvedClockIn:  new Date(timeLog.timeIn),
-            approvedClockOut: timeLog.timeOut ? new Date(timeLog.timeOut) : null,
+            approvedClockIn:  approvedIn,
+            approvedClockOut: approvedOut,
             scheduledHours:   segHours != null ? parseFloat(segHours.toString()) : null,
             actualHours:      segHours != null ? parseFloat(segHours.toString()) : null,
             ...(notes && { notes }),
@@ -410,51 +446,68 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, userId, company
       }
 
       // ── REGULAR ─────────────────────────────────────────────────────────
-      const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
-      const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
-
-      const userShift = await fetchScheduleForDate(
-        timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
-      );
-
       let finalClockIn  = new Date(timeLog.timeIn);
       let finalClockOut = timeLog.timeOut ? new Date(timeLog.timeOut) : null;
       let scheduledHours = null;
 
-      if (userShift?.shift) {
-        const startTime = userShift.customStartTime || userShift.shift.startTime;
-        const endTime   = userShift.customEndTime   || userShift.shift.endTime;
-        const tz        = userShift.shift.timeZone  || companyTz;
+      if (approvalMode === "raw") {
+        // ── APPROVE RAW: honour actual punch times, no schedule snapping ──────
+        scheduledHours = finalClockIn && finalClockOut
+          ? calculateHours(finalClockIn, finalClockOut)
+          : null;
 
-        const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
-        const scheduledClockOut = combineDateTime(localDateStr, endTime,   tz);
-        if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
+        await prisma.timeLog.update({
+          where: { id: timeLog.id },
+          data: {
+            originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
+            originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
+            isApproved:      true,
+          },
+        });
+      } else {
+        // ── APPROVE SCHEDULE (default): snap to shift schedule ────────────────
+        const localDateStr        = moment.tz(timeLog.timeIn, companyTz).format("YYYY-MM-DD");
+        const dateOnlyForSchedule = moment.tz(timeLog.timeIn, companyTz).startOf("day").toDate();
 
-        if (finalClockIn > scheduledClockIn) {
-          const rawLateMs = finalClockIn - scheduledClockIn;
-          finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
-        } else {
-          finalClockIn = scheduledClockIn;
+        const userShift = await fetchScheduleForDate(
+          timeLog.userId, dateOnlyForSchedule, timeLog.user?.departmentId, companyId, localDateStr
+        );
+
+        if (userShift?.shift) {
+          const startTime = userShift.customStartTime || userShift.shift.startTime;
+          const endTime   = userShift.customEndTime   || userShift.shift.endTime;
+          const tz        = userShift.shift.timeZone  || companyTz;
+
+          const scheduledClockIn  = combineDateTime(localDateStr, startTime, tz);
+          const scheduledClockOut = combineDateTime(localDateStr, endTime,   tz);
+          if (userShift.shift.crossesMidnight) scheduledClockOut.setDate(scheduledClockOut.getDate() + 1);
+
+          if (finalClockIn > scheduledClockIn) {
+            const rawLateMs = finalClockIn - scheduledClockIn;
+            finalClockIn = rawLateMs <= graceMs ? scheduledClockIn : finalClockIn;
+          } else {
+            finalClockIn = scheduledClockIn;
+          }
+          finalClockOut = finalClockOut
+            ? (finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut)
+            : scheduledClockOut;
+
+          scheduledHours = calculateHours(finalClockIn, finalClockOut);
         }
-        finalClockOut = finalClockOut
-          ? (finalClockOut < scheduledClockOut ? finalClockOut : scheduledClockOut)
-          : scheduledClockOut;
 
-        scheduledHours = calculateHours(finalClockIn, finalClockOut);
+        await prisma.timeLog.update({
+          where: { id: timeLog.id },
+          data: {
+            originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
+            originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
+            timeIn:          finalClockIn,
+            timeOut:         finalClockOut,
+            isApproved:      true,
+          },
+        });
       }
 
       const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
-
-      await prisma.timeLog.update({
-        where: { id: timeLog.id },
-        data: {
-          originalTimeIn:  timeLog.originalTimeIn  || timeLog.timeIn,
-          originalTimeOut: timeLog.originalTimeOut || timeLog.timeOut,
-          timeIn:          finalClockIn,
-          timeOut:         finalClockOut,
-          isApproved:      true,
-        },
-      });
 
       try { await computeTimeLogSummary(timeLog.id); } catch (_) {}
 
