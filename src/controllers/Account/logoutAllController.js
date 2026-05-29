@@ -21,8 +21,6 @@ const logoutAll = async (req, res) => {
       where: { id: userId },
       data: {
         tokenVersion: { increment: 1 },
-        registeredDeviceId: null,
-        registeredDeviceAt: null,
         updatedAt: new Date(),
       },
     });
