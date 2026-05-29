@@ -60,22 +60,47 @@ describe("mobileDeviceLogin", () => {
     );
   });
 
-  it("allows a different device after the 24-hour cooldown", () => {
+  it("requires confirmation after cooldown before switching devices", () => {
     const registeredAt = new Date(Date.now() - DEVICE_SWITCH_COOLDOWN_MS - 1000);
+    const conflict = getRegisteredDeviceConflict(
+      { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
+      DEVICE_B
+    );
+    assert.equal(conflict.code, "DEVICE_ALREADY_REGISTERED");
     assert.equal(
       getRegisteredDeviceConflict(
         { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
-        DEVICE_B
+        DEVICE_B,
+        true
       ),
       null
     );
     assert.equal(
       shouldBumpTokenVersionOnDeviceSwitch(
         { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
-        DEVICE_B
+        DEVICE_B,
+        true
       ),
       true
     );
+    assert.equal(
+      shouldBumpTokenVersionOnDeviceSwitch(
+        { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
+        DEVICE_B,
+        false
+      ),
+      false
+    );
+  });
+
+  it("does not allow replaceDevice to bypass the cooldown", () => {
+    const registeredAt = new Date();
+    const conflict = getRegisteredDeviceConflict(
+      { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
+      DEVICE_B,
+      true
+    );
+    assert.equal(conflict.code, "DEVICE_SWITCH_COOLDOWN");
   });
 
   it("bumps tokenVersion when switching devices after cooldown", () => {

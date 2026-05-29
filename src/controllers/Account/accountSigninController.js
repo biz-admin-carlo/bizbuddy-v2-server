@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const {
   getNormalizedDeviceId,
+  parseReplaceDevice,
   getRegisteredDeviceConflict,
   shouldBumpTokenVersionOnDeviceSwitch,
   buildSignInUpdateData,
@@ -136,7 +137,7 @@ const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
     // Support both legacy GET (query params) and new POST (request body)
-    const { email, password, companyId, deviceId } = {
+    const { email, password, companyId, deviceId, replaceDevice } = {
       ...req.query,
       ...req.body,
     };
@@ -170,8 +171,13 @@ const signIn = async (req, res) => {
     }
 
     // Mobile sends deviceId; web omits it and keeps existing behavior.
-      const normalizedDeviceId = getNormalizedDeviceId(deviceId);
-    const deviceConflict = getRegisteredDeviceConflict(user, normalizedDeviceId);
+    const normalizedDeviceId = getNormalizedDeviceId(deviceId);
+    const replaceRegisteredDevice = parseReplaceDevice(replaceDevice);
+    const deviceConflict = getRegisteredDeviceConflict(
+      user,
+      normalizedDeviceId,
+      replaceRegisteredDevice
+    );
     if (deviceConflict) {
       console.warn("[SignIn] Device conflict", {
         userId: user.id,
@@ -180,6 +186,7 @@ const signIn = async (req, res) => {
         registeredDeviceId: user.registeredDeviceId ?? null,
         registeredDeviceAt: user.registeredDeviceAt ?? null,
         requestDeviceId: normalizedDeviceId,
+        replaceDevice: replaceRegisteredDevice,
         switchAllowedAt: deviceConflict.switchAllowedAt ?? null,
       });
       return res.status(deviceConflict.status).json({
@@ -187,6 +194,7 @@ const signIn = async (req, res) => {
         code: deviceConflict.code,
         registeredDeviceId: user.registeredDeviceId ?? null,
         requestDeviceId: normalizedDeviceId,
+        replaceDeviceAccepted: replaceRegisteredDevice,
         switchAllowedAt: deviceConflict.switchAllowedAt ?? null,
       });
     }
@@ -196,7 +204,8 @@ const signIn = async (req, res) => {
       data: buildSignInUpdateData(normalizedDeviceId, {
         bumpTokenVersion: shouldBumpTokenVersionOnDeviceSwitch(
           user,
-          normalizedDeviceId
+          normalizedDeviceId,
+          replaceRegisteredDevice
         ),
       }),
     });
