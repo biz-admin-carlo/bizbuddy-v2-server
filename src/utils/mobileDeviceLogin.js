@@ -46,28 +46,40 @@ function isWithinDeviceSwitchCooldown(registeredDeviceAt, now = new Date()) {
   return now < endsAt;
 }
 
-function getRegisteredDeviceConflict(user, normalizedDeviceId) {
+function getRegisteredDeviceConflict(user, normalizedDeviceId, replaceDevice = false) {
   if (!normalizedDeviceId || !isDifferentRegisteredDevice(user, normalizedDeviceId)) {
     return null;
   }
 
-  if (!isWithinDeviceSwitchCooldown(user.registeredDeviceAt)) {
-    // Cooldown expired — allow login and update registered device.
+  if (isWithinDeviceSwitchCooldown(user.registeredDeviceAt)) {
+    const switchAllowedAt = getDeviceSwitchCooldownEndsAt(user.registeredDeviceAt);
+    return {
+      status: 403,
+      message:
+        "This account was recently signed in on another device. You can sign in here after the 24-hour waiting period.",
+      code: "DEVICE_SWITCH_COOLDOWN",
+      switchAllowedAt: switchAllowedAt.toISOString(),
+    };
+  }
+
+  // Cooldown expired — require explicit confirmation via replaceDevice.
+  if (parseReplaceDevice(replaceDevice)) {
     return null;
   }
 
-  const switchAllowedAt = getDeviceSwitchCooldownEndsAt(user.registeredDeviceAt);
   return {
     status: 403,
     message:
-      "This account was recently signed in on another device. You can sign in here after the 24-hour waiting period.",
-    code: "DEVICE_SWITCH_COOLDOWN",
-    switchAllowedAt: switchAllowedAt.toISOString(),
+      "This account is registered on a different phone or tablet. Confirm on this device to continue.",
+    code: "DEVICE_ALREADY_REGISTERED",
   };
 }
 
-function shouldBumpTokenVersionOnDeviceSwitch(user, normalizedDeviceId) {
-  return isDifferentRegisteredDevice(user, normalizedDeviceId);
+function shouldBumpTokenVersionOnDeviceSwitch(user, normalizedDeviceId, replaceDevice = false) {
+  return (
+    parseReplaceDevice(replaceDevice) &&
+    isDifferentRegisteredDevice(user, normalizedDeviceId)
+  );
 }
 
 function buildSignInUpdateData(normalizedDeviceId, { bumpTokenVersion = false } = {}) {
