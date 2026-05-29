@@ -10,7 +10,7 @@ const {
   getRegisteredDeviceConflict,
   shouldBumpTokenVersionOnDeviceSwitch,
   buildSignInUpdateData,
-  isMobileSignOut,
+  shouldBumpTokenVersionOnSignOut,
 } = require("@utils/mobileDeviceLogin");
 
 const getUserEmail = async (req, res) => {
@@ -95,6 +95,17 @@ const getUserProfile = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
+
+    if (
+      decoded.tokenVersion != null &&
+      user.tokenVersion !== decoded.tokenVersion
+    ) {
+      return res.status(401).json({
+        message: "Session ended. Please sign in again.",
+        code: "TOKEN_VERSION_MISMATCH",
+      });
+    }
+
     let latestSubscription =
       user.Subscription && user.Subscription.length > 0 ? user.Subscription[0] : null;
     if (!latestSubscription) {
@@ -242,9 +253,10 @@ const signOut = async (req, res) => {
     const { deviceId } = { ...req.query, ...req.body };
     const normalizedDeviceId = getNormalizedDeviceId(deviceId);
 
-    // Mobile sign-out invalidates the JWT but keeps registeredDeviceId/registeredDeviceAt
-    // so the 24-hour device-switch cooldown still applies.
-    if (isMobileSignOut(normalizedDeviceId)) {
+    // Mobile sign-out is client-side session clear only (keeps registeredDeviceId for
+    // cooldown). Do not bump tokenVersion — biometric reuses the same JWT on this device.
+    // POST /account/logout-all still revokes all sessions when needed.
+    if (shouldBumpTokenVersionOnSignOut(normalizedDeviceId)) {
       await prisma.user.update({
         where: { id: userId },
         data: {
