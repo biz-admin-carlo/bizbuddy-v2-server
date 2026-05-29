@@ -242,18 +242,20 @@ async function computeTimeLogSummary(timeLogId) {
   const company = await prisma.company.findUnique({
     where: { id: log.user.companyId },
     select: {
-      timeZone:            true,
-      gracePeriodMinutes:  true,
-      minimumLunchMinutes: true,
-      defaultShiftHours:   true,
+      timeZone:                 true,
+      gracePeriodMinutes:       true,
+      minimumLunchMinutes:      true,
+      defaultShiftHours:        true,
+      earlyClockInGraceMinutes: true,
     },
   });
 
-  const tz                 = resolveTimezone(company?.timeZone);
-  const gracePeriodMinutes = company?.gracePeriodMinutes  ?? 15;
-  const minimumLunchMins   = company?.minimumLunchMinutes ?? 60;
-  const defaultShiftHours  = parseFloat(company?.defaultShiftHours ?? 8);
-  const graceMs            = (gracePeriodMinutes * 60 + 59) * 1000;
+  const tz                       = resolveTimezone(company?.timeZone);
+  const gracePeriodMinutes        = company?.gracePeriodMinutes  ?? 15;
+  const minimumLunchMins          = company?.minimumLunchMinutes ?? 60;
+  const defaultShiftHours         = parseFloat(company?.defaultShiftHours ?? 8);
+  const graceMs                   = (gracePeriodMinutes * 60 + 59) * 1000;
+  const earlyClockInGraceMinutes  = company?.earlyClockInGraceMinutes ?? null;
 
   // ── 3. Fetch ALL UserShifts for the clock-in date ───────────────────────────
   // Driver employees have three shifts per day (AM, Regular, PM). Fetching all
@@ -436,6 +438,21 @@ async function computeTimeLogSummary(timeLogId) {
     shiftEnd = new Date(timeIn.getTime() + defaultShiftHours * 60 * 60 * 1000);
   }
 
+  // ── 5b. Early clock-in check ─────────────────────────────────────────────────
+  // Determines whether this punch should be considered "too early."
+  //
+  // earlyClockInGraceMinutes (Company setting):
+  //   null → always snap to shiftStart (unlimited grace; backwards-compatible default)
+  //   N    → snap only when early by ≤ N min; flag as too early when early by > N min
+  //
+  // Effect on REGULAR: controls whether effectiveTimeIn snaps to shiftStart.
+  // Effect on DRIVER_AIDE: flag only — segment clamping already excludes pre-shift time.
+  const earlyClockInGraceMs = earlyClockInGraceMinutes != null
+    ? earlyClockInGraceMinutes * 60 * 1000
+    : Infinity; // null = always snap
+  const earlyByMs       = shiftStart ? Math.max(0, shiftStart.getTime() - timeIn.getTime()) : 0;
+  const isTooEarlyPunch = earlyByMs > 0 && isFinite(earlyClockInGraceMs) && earlyByMs > earlyClockInGraceMs;
+
   // ── 6. Compute grossHours ───────────────────────────────────────────────────
   // Raw timeOut − timeIn in hours. No timezone dependency — pure ms difference.
   // Counterpart to netWorkedHours (gross before deductions).
@@ -524,9 +541,16 @@ async function computeTimeLogSummary(timeLogId) {
 
   if (!isDriverLog) {
     // ── Regular path ──────────────────────────────────────────────────────────
-    const grossMs     = timeOut - timeIn;
-    const deductionMs = totalBreakMins * 60 * 1000;
-    netWorkedHours    = +(Math.max(0, grossMs - deductionMs) / 3600000).toFixed(2);
+    // Snap effective start to shiftStart only when within the early grace window.
+    // isTooEarlyPunch = true means the employee clocked in too far before shift start —
+    // their actual timeIn is kept so the inflated hours are visible for admin review.
+    // Falls back to raw timeIn when no shift is assigned (shiftStart = null).
+    const effectiveTimeIn = !isTooEarlyPunch && shiftStart && timeIn < shiftStart
+      ? shiftStart
+      : timeIn;
+    const effectiveMs  = timeOut.getTime() - effectiveTimeIn.getTime();
+    const deductionMs  = totalBreakMins * 60 * 1000;
+    netWorkedHours     = +(Math.max(0, effectiveMs - deductionMs) / 3600000).toFixed(2);
 
     // rawOtMinutes = minutes past shift end, grace-adjusted.
     // shiftEnd is always resolved — either from the assigned shift's latest endTime,
@@ -583,6 +607,7 @@ async function computeTimeLogSummary(timeLogId) {
     rawOtMinutes:          rawOtMinutes         !== null ? rawOtMinutes         : undefined,
     scheduledHours:        scheduledHours       !== null ? scheduledHours       : undefined,
     grossHours,
+    isTooEarlyPunch,
     calculatedAt:          new Date(),
   };
 
@@ -604,6 +629,7 @@ async function computeTimeLogSummary(timeLogId) {
     (isDriverLog
       ? ` | segs=[AM:${driverAmSegmentHours ?? "-"} REG:${regularSegmentHours ?? "-"} PM:${driverPmSegmentHours ?? "-"}]`
       : "") +
+    (isTooEarlyPunch ? ` | ⚠️ TOO_EARLY(${Math.round(earlyByMs / 60000)}min)` : "") +
     ` | tz=${tz}`
   );
 

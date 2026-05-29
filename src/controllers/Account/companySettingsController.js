@@ -21,6 +21,7 @@ exports.getSettings = async (req, res) => {
         timeZone: true,
         driverAideThresholdMinutes:   true,
         shiftAssignmentWindowMinutes: true,
+        earlyClockInGraceMinutes:     true,
         autoClockOutWarningHours:     true,
         autoClockOutGraceHours:       true,
         autoClockOutNotifyEmails:     true,
@@ -82,6 +83,7 @@ exports.updateSettings = async (req, res) => {
       timeZone,
       driverAideThresholdMinutes,
       shiftAssignmentWindowMinutes,
+      earlyClockInGraceMinutes,
       autoClockOutWarningHours,
       autoClockOutGraceHours,
       autoClockOutNotifyEmails,
@@ -144,6 +146,14 @@ exports.updateSettings = async (req, res) => {
               ? shiftAssignmentWindowMinutes
               : 30,
         }),
+        ...(earlyClockInGraceMinutes !== undefined && {
+          earlyClockInGraceMinutes:
+            earlyClockInGraceMinutes === null
+              ? null
+              : Number.isInteger(earlyClockInGraceMinutes) && earlyClockInGraceMinutes > 0
+                ? earlyClockInGraceMinutes
+                : undefined,
+        }),
         // ── Auto clock-out config ─────────────────────────────────────────────
         ...(autoClockOutWarningHours !== undefined && {
           autoClockOutWarningHours:
@@ -188,6 +198,7 @@ exports.updateSettings = async (req, res) => {
         timeZone: true,
         driverAideThresholdMinutes:   true,
         shiftAssignmentWindowMinutes: true,
+        earlyClockInGraceMinutes:     true,
         autoClockOutWarningHours:     true,
         autoClockOutGraceHours:       true,
         autoClockOutNotifyEmails:     true,
