@@ -3,10 +3,12 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  DEVICE_SWITCH_COOLDOWN_MS,
   getNormalizedDeviceId,
-  parseReplaceDevice,
+  getDeviceSwitchCooldownEndsAt,
+  isWithinDeviceSwitchCooldown,
   getRegisteredDeviceConflict,
-  shouldBumpTokenVersionOnReplace,
+  shouldBumpTokenVersionOnDeviceSwitch,
   buildSignInUpdateData,
   isMobileSignOut,
 } = require("../src/utils/mobileDeviceLogin");
@@ -32,55 +34,72 @@ describe("mobileDeviceLogin", () => {
   });
 
   it("allows same-device mobile re-login", () => {
+    const registeredAt = new Date();
     assert.equal(
-      getRegisteredDeviceConflict({ registeredDeviceId: DEVICE_A }, DEVICE_A),
+      getRegisteredDeviceConflict(
+        { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
+        DEVICE_A
+      ),
       null
     );
   });
 
-  it("blocks login from a second device while another is registered", () => {
+  it("blocks a different device within the 24-hour cooldown", () => {
+    const registeredAt = new Date();
     const conflict = getRegisteredDeviceConflict(
-      { registeredDeviceId: DEVICE_A },
+      { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
       DEVICE_B
     );
     assert.equal(conflict.status, 403);
-    assert.equal(conflict.code, "DEVICE_ALREADY_REGISTERED");
-    assert.match(conflict.message, /another device/i);
+    assert.equal(conflict.code, "DEVICE_SWITCH_COOLDOWN");
+    assert.ok(conflict.switchAllowedAt);
+    const endsAt = new Date(conflict.switchAllowedAt);
+    assert.equal(
+      endsAt.getTime() - registeredAt.getTime(),
+      DEVICE_SWITCH_COOLDOWN_MS
+    );
   });
 
-  it("allows replacing the registered device when replaceDevice is true", () => {
+  it("allows a different device after the 24-hour cooldown", () => {
+    const registeredAt = new Date(Date.now() - DEVICE_SWITCH_COOLDOWN_MS - 1000);
     assert.equal(
-      getRegisteredDeviceConflict({ registeredDeviceId: DEVICE_A }, DEVICE_B, true),
+      getRegisteredDeviceConflict(
+        { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
+        DEVICE_B
+      ),
       null
     );
-    assert.equal(parseReplaceDevice(true), true);
-    assert.equal(parseReplaceDevice("true"), true);
-    assert.equal(parseReplaceDevice(false), false);
     assert.equal(
-      shouldBumpTokenVersionOnReplace(
-        { registeredDeviceId: DEVICE_A },
-        DEVICE_B,
-        true
+      shouldBumpTokenVersionOnDeviceSwitch(
+        { registeredDeviceId: DEVICE_A, registeredDeviceAt: registeredAt },
+        DEVICE_B
       ),
       true
     );
+  });
+
+  it("bumps tokenVersion when switching devices after cooldown", () => {
     const update = buildSignInUpdateData(DEVICE_B, { bumpTokenVersion: true });
     assert.equal(update.registeredDeviceId, DEVICE_B);
     assert.deepEqual(update.tokenVersion, { increment: 1 });
   });
 
-  it("does not bump tokenVersion when replaceDevice is true on same device", () => {
+  it("does not bump tokenVersion on same-device login", () => {
     assert.equal(
-      shouldBumpTokenVersionOnReplace(
-        { registeredDeviceId: DEVICE_A },
-        DEVICE_A,
-        true
-      ),
+      shouldBumpTokenVersionOnDeviceSwitch({ registeredDeviceId: DEVICE_A }, DEVICE_A),
       false
     );
   });
 
-  it("clears device slot only on mobile sign-out", () => {
+  it("detects cooldown window from registeredDeviceAt", () => {
+    const now = new Date("2026-05-29T12:00:00.000Z");
+    const registeredAt = new Date("2026-05-29T10:00:00.000Z");
+    assert.equal(isWithinDeviceSwitchCooldown(registeredAt, now), true);
+    const endsAt = getDeviceSwitchCooldownEndsAt(registeredAt);
+    assert.equal(endsAt.toISOString(), "2026-05-30T10:00:00.000Z");
+  });
+
+  it("treats mobile sign-out as mobile when deviceId is present", () => {
     assert.equal(isMobileSignOut(DEVICE_A), true);
     assert.equal(isMobileSignOut(""), false);
   });

@@ -6,9 +6,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const {
   getNormalizedDeviceId,
-  parseReplaceDevice,
   getRegisteredDeviceConflict,
-  shouldBumpTokenVersionOnReplace,
+  shouldBumpTokenVersionOnDeviceSwitch,
   buildSignInUpdateData,
   isMobileSignOut,
 } = require("@utils/mobileDeviceLogin");
@@ -137,7 +136,7 @@ const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
     // Support both legacy GET (query params) and new POST (request body)
-    const { email, password, companyId, deviceId, replaceDevice } = {
+    const { email, password, companyId, deviceId } = {
       ...req.query,
       ...req.body,
     };
@@ -171,27 +170,33 @@ const signIn = async (req, res) => {
     }
 
     // Mobile sends deviceId; web omits it and keeps existing behavior.
-    const normalizedDeviceId = getNormalizedDeviceId(deviceId);
-    const replaceRegisteredDevice = parseReplaceDevice(replaceDevice);
-    const deviceConflict = getRegisteredDeviceConflict(
-      user,
-      normalizedDeviceId,
-      replaceRegisteredDevice
-    );
+      const normalizedDeviceId = getNormalizedDeviceId(deviceId);
+    const deviceConflict = getRegisteredDeviceConflict(user, normalizedDeviceId);
     if (deviceConflict) {
+      console.warn("[SignIn] Device conflict", {
+        userId: user.id,
+        email: normalizedEmail,
+        companyId,
+        registeredDeviceId: user.registeredDeviceId ?? null,
+        registeredDeviceAt: user.registeredDeviceAt ?? null,
+        requestDeviceId: normalizedDeviceId,
+        switchAllowedAt: deviceConflict.switchAllowedAt ?? null,
+      });
       return res.status(deviceConflict.status).json({
         message: deviceConflict.message,
         code: deviceConflict.code,
+        registeredDeviceId: user.registeredDeviceId ?? null,
+        requestDeviceId: normalizedDeviceId,
+        switchAllowedAt: deviceConflict.switchAllowedAt ?? null,
       });
     }
 
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: buildSignInUpdateData(normalizedDeviceId, {
-        bumpTokenVersion: shouldBumpTokenVersionOnReplace(
+        bumpTokenVersion: shouldBumpTokenVersionOnDeviceSwitch(
           user,
-          normalizedDeviceId,
-          replaceRegisteredDevice
+          normalizedDeviceId
         ),
       }),
     });
@@ -228,14 +233,12 @@ const signOut = async (req, res) => {
     const { deviceId } = { ...req.query, ...req.body };
     const normalizedDeviceId = getNormalizedDeviceId(deviceId);
 
-    // Mobile sign-out clears the device slot and invalidates the current JWT.
-    // Web sign-out leaves mobile registration untouched.
+    // Mobile sign-out invalidates the JWT but keeps registeredDeviceId/registeredDeviceAt
+    // so the 24-hour device-switch cooldown still applies.
     if (isMobileSignOut(normalizedDeviceId)) {
       await prisma.user.update({
         where: { id: userId },
         data: {
-          registeredDeviceId: null,
-          registeredDeviceAt: null,
           tokenVersion: { increment: 1 },
         },
       });
