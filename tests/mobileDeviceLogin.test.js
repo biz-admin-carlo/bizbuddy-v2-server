@@ -11,6 +11,7 @@ const {
   shouldBumpTokenVersionOnDeviceSwitch,
   buildSignInUpdateData,
   isMobileSignOut,
+  shouldBumpTokenVersionOnSignOut,
 } = require("../src/utils/mobileDeviceLogin");
 
 const DEVICE_A = "550e8400-e29b-41d4-a716-446655440000";
@@ -127,5 +128,10 @@ describe("mobileDeviceLogin", () => {
   it("treats mobile sign-out as mobile when deviceId is present", () => {
     assert.equal(isMobileSignOut(DEVICE_A), true);
     assert.equal(isMobileSignOut(""), false);
+  });
+
+  it("does not bump tokenVersion on mobile sign-out (biometric reuses saved JWT)", () => {
+    assert.equal(shouldBumpTokenVersionOnSignOut(DEVICE_A), false);
+    assert.equal(shouldBumpTokenVersionOnSignOut(""), false);
   });
 });

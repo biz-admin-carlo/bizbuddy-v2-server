@@ -98,6 +98,14 @@ function isMobileSignOut(normalizedDeviceId) {
   return normalizedDeviceId.length > 0;
 }
 
+/**
+ * Mobile sign-out should not bump tokenVersion — biometric replays the saved JWT
+ * on the same device. Use logout-all (or password login + device switch) to revoke.
+ */
+function shouldBumpTokenVersionOnSignOut() {
+  return false;
+}
+
 module.exports = {
   DEVICE_SWITCH_COOLDOWN_MS,
   getNormalizedDeviceId,
@@ -109,4 +117,5 @@ module.exports = {
   shouldBumpTokenVersionOnDeviceSwitch,
   buildSignInUpdateData,
   isMobileSignOut,
+  shouldBumpTokenVersionOnSignOut,
 };
