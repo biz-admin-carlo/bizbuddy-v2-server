@@ -4,7 +4,9 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   getNormalizedDeviceId,
+  parseReplaceDevice,
   getRegisteredDeviceConflict,
+  shouldBumpTokenVersionOnReplace,
   buildSignInUpdateData,
   isMobileSignOut,
 } = require("../src/utils/mobileDeviceLogin");
@@ -44,6 +46,38 @@ describe("mobileDeviceLogin", () => {
     assert.equal(conflict.status, 403);
     assert.equal(conflict.code, "DEVICE_ALREADY_REGISTERED");
     assert.match(conflict.message, /another device/i);
+  });
+
+  it("allows replacing the registered device when replaceDevice is true", () => {
+    assert.equal(
+      getRegisteredDeviceConflict({ registeredDeviceId: DEVICE_A }, DEVICE_B, true),
+      null
+    );
+    assert.equal(parseReplaceDevice(true), true);
+    assert.equal(parseReplaceDevice("true"), true);
+    assert.equal(parseReplaceDevice(false), false);
+    assert.equal(
+      shouldBumpTokenVersionOnReplace(
+        { registeredDeviceId: DEVICE_A },
+        DEVICE_B,
+        true
+      ),
+      true
+    );
+    const update = buildSignInUpdateData(DEVICE_B, { bumpTokenVersion: true });
+    assert.equal(update.registeredDeviceId, DEVICE_B);
+    assert.deepEqual(update.tokenVersion, { increment: 1 });
+  });
+
+  it("does not bump tokenVersion when replaceDevice is true on same device", () => {
+    assert.equal(
+      shouldBumpTokenVersionOnReplace(
+        { registeredDeviceId: DEVICE_A },
+        DEVICE_A,
+        true
+      ),
+      false
+    );
   });
 
   it("clears device slot only on mobile sign-out", () => {

@@ -6,7 +6,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const {
   getNormalizedDeviceId,
+  parseReplaceDevice,
   getRegisteredDeviceConflict,
+  shouldBumpTokenVersionOnReplace,
   buildSignInUpdateData,
   isMobileSignOut,
 } = require("@utils/mobileDeviceLogin");
@@ -135,7 +137,10 @@ const signIn = async (req, res) => {
   console.log("## Signin Start");
   try {
     // Support both legacy GET (query params) and new POST (request body)
-    const { email, password, companyId, deviceId } = { ...req.query, ...req.body };
+    const { email, password, companyId, deviceId, replaceDevice } = {
+      ...req.query,
+      ...req.body,
+    };
 
     if (!email || !password || !companyId) {
       return res.status(400).json({
@@ -167,7 +172,12 @@ const signIn = async (req, res) => {
 
     // Mobile sends deviceId; web omits it and keeps existing behavior.
     const normalizedDeviceId = getNormalizedDeviceId(deviceId);
-    const deviceConflict = getRegisteredDeviceConflict(user, normalizedDeviceId);
+    const replaceRegisteredDevice = parseReplaceDevice(replaceDevice);
+    const deviceConflict = getRegisteredDeviceConflict(
+      user,
+      normalizedDeviceId,
+      replaceRegisteredDevice
+    );
     if (deviceConflict) {
       return res.status(deviceConflict.status).json({
         message: deviceConflict.message,
@@ -177,7 +187,13 @@ const signIn = async (req, res) => {
 
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
-      data: buildSignInUpdateData(normalizedDeviceId),
+      data: buildSignInUpdateData(normalizedDeviceId, {
+        bumpTokenVersion: shouldBumpTokenVersionOnReplace(
+          user,
+          normalizedDeviceId,
+          replaceRegisteredDevice
+        ),
+      }),
     });
 
     if (!JWT_SECRET) {
