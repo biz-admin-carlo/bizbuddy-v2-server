@@ -10,8 +10,12 @@ function getNormalizedDeviceId(deviceId) {
   return String(deviceId).trim();
 }
 
-function getRegisteredDeviceConflict(user, normalizedDeviceId) {
-  if (!normalizedDeviceId) {
+function parseReplaceDevice(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function getRegisteredDeviceConflict(user, normalizedDeviceId, replaceDevice = false) {
+  if (!normalizedDeviceId || replaceDevice) {
     return null;
   }
   if (user.registeredDeviceId && user.registeredDeviceId !== normalizedDeviceId) {
@@ -25,11 +29,23 @@ function getRegisteredDeviceConflict(user, normalizedDeviceId) {
   return null;
 }
 
-function buildSignInUpdateData(normalizedDeviceId) {
+function shouldBumpTokenVersionOnReplace(user, normalizedDeviceId, replaceDevice) {
+  return (
+    replaceDevice &&
+    normalizedDeviceId &&
+    user.registeredDeviceId &&
+    user.registeredDeviceId !== normalizedDeviceId
+  );
+}
+
+function buildSignInUpdateData(normalizedDeviceId, { bumpTokenVersion = false } = {}) {
   const data = { lastLoginAt: new Date() };
   if (normalizedDeviceId) {
     data.registeredDeviceId = normalizedDeviceId;
     data.registeredDeviceAt = new Date();
+  }
+  if (bumpTokenVersion) {
+    data.tokenVersion = { increment: 1 };
   }
   return data;
 }
@@ -40,7 +56,9 @@ function isMobileSignOut(normalizedDeviceId) {
 
 module.exports = {
   getNormalizedDeviceId,
+  parseReplaceDevice,
   getRegisteredDeviceConflict,
+  shouldBumpTokenVersionOnReplace,
   buildSignInUpdateData,
   isMobileSignOut,
 };
