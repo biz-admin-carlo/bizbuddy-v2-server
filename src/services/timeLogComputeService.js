@@ -226,6 +226,13 @@ async function computeTimeLogSummary(timeLogId) {
 
   if (!log.timeOut) return null;
 
+  if (log.punchType === "TRAINING") {
+    return require("@utils/punchTypeUtils").applyTrainingFlatHours(
+      timeLogId,
+      log.user.companyId,
+    );
+  }
+
   if (BNC_COMPANY_IDS.has(log.user.companyId)) {
     return require("./strategies/bncStrategy").computeBnC(timeLogId);
   }
