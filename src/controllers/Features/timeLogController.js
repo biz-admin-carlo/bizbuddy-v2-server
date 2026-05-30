@@ -9,6 +9,7 @@ const { applyAutoBreaks } = require("@services/autoBreakService");
 const { BNC_COMPANY_IDS } = require("@config/companyTypes");
 const { matchShiftToWindow } = require("@services/timeLogComputeUtils");
 const moment = require("moment-timezone");
+const { resolvePunchType, punchTypeFromReason } = require("@utils/punchTypeUtils");
 
 function calculateDistanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -167,13 +168,11 @@ const timeIn = async (req, res) => {
       return res.status(400).json({ message: "User already timed in." });
 
     // ✅ FIX: destructure `remarks` from request body
-    const { localTimestamp, deviceInfo, location, punchType, remarks } = req.body;
+    const { localTimestamp, deviceInfo, location, punchType, reason, remarks } = req.body;
 
     const actualTimeIn = localTimestamp ? new Date(localTimestamp) : new Date();
 
-    // Validate punchType
-    const resolvedPunchType =
-      punchType && VALID_PUNCH_TYPES.includes(punchType) ? punchType : "REGULAR";
+    const resolvedPunchType = resolvePunchType({ punchType, reason });
 
     // ✅ Validate remarks — must be an array of objects with type + message
     // Sanitize to prevent storing arbitrary data
@@ -242,7 +241,7 @@ const timeOut = async (req, res) => {
     if (!activeLog)
       return res.status(400).json({ message: "No active time log found." });
 
-    const { localTimestamp, deviceInfo, location, punchType, autoLunchApplied, autoLunchMinutes } = req.body;
+    const { localTimestamp, deviceInfo, location, punchType, reason, autoLunchApplied, autoLunchMinutes } = req.body;
     const actualTimeOut = localTimestamp ? new Date(localTimestamp) : new Date();
 
     const locCheck = await verifyLocationRestriction(
@@ -268,6 +267,9 @@ const timeOut = async (req, res) => {
 
     if (punchType && VALID_PUNCH_TYPES.includes(punchType)) {
       updateData.punchType = punchType;
+    } else {
+      const fromReason = punchTypeFromReason(reason);
+      if (fromReason) updateData.punchType = fromReason;
     }
 
     if (autoLunchApplied === true && Number.isInteger(autoLunchMinutes) && autoLunchMinutes > 0) {

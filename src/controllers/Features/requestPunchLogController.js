@@ -3,6 +3,7 @@
 const { prisma } = require("@config/connection");
 const { createNotification } = require("@services/notificationService");
 const moment = require("moment-timezone");
+const { resolvePunchType, applyTrainingFlatHours } = require("@utils/punchTypeUtils");
 
 // Parses a clock time string in the context of a known timezone.
 // If the string already carries an offset (e.g. +08:00 or Z), it is used as-is.
@@ -365,18 +366,24 @@ const approveRequestedPunchLog = async (req, res) => {
       });
     }
 
+    const punchType = resolvePunchType({ reason: request.reason });
+
     // Create the actual time log
-    const newTimeLog = await prisma.timeLog.create({
+    let newTimeLog = await prisma.timeLog.create({
       data: {
         userId: request.userId,
         timeIn: request.requestedClockIn,
         timeOut: request.requestedClockOut,
         status: false, // Completed
+        punchType,
         coffeeBreaks: [],
         lunchBreak: {},
-        // Add any other default fields your timeLog requires
       },
     });
+
+    if (punchType === "TRAINING") {
+      newTimeLog = await applyTrainingFlatHours(newTimeLog.id, request.user.companyId);
+    }
 
     // Update request status
     const updatedRequest = await prisma.requestedTimeLog.update({
