@@ -6,6 +6,7 @@ const { authorizeRoles } = require("@middlewares/roleMiddleware");
 const authenticate = require("@middlewares/authMiddleware");
 const {
   submitRequestPunchLog,
+  checkConflict,
   viewMyRequestedPunchLogs,
   viewAllRequestedPunchLogs,
   approveRequestedPunchLog,
@@ -14,6 +15,13 @@ const {
 } = require("@controllers/Features/requestPunchLogController");
 
 // Employee routes
+router.post(
+  "/check-conflict",
+  authenticate,
+  authorizeRoles("employee", "admin", "supervisor", "superadmin"),
+  checkConflict
+);
+
 router.post(
   "/submit",
   authenticate,
