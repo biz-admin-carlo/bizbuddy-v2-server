@@ -19,7 +19,7 @@ const { prisma } = require("@config/connection");
 const moment = require("moment-timezone");
 const { randomUUID } = require("crypto");
 const { createNotification } = require("@services/notificationService");
-const { resolveDriverAideSegments } = require("@services/timeLogComputeService");
+const { resolveDriverAideSegments, computeTimeLogSummary } = require("@services/timeLogComputeService");
 const { BNC_COMPANY_IDS } = require("@config/companyTypes");
 const daycareCutoffStrategy                        = require("@services/Cutoff/daycareCutoffStrategy");
 const bncCutoffStrategy                            = require("@services/Cutoff/bncCutoffStrategy");
@@ -772,15 +772,48 @@ const syncCutoffApprovals = async (req, res) => {
 
     const created = await syncApprovalRecords(cutoffPeriod, companyId, companyTimezone);
 
+    // Re-run computeTimeLogSummary for every timelog in the period.
+    // Picks up shifts that were assigned after the original clock-out compute
+    // (stale scheduledHours / lateHours / undertimeHours on the TimeLog record).
+    const endDateStr  = new Date(cutoffPeriod.periodEnd).toISOString().slice(0, 10);
+    const periodEndEOD = moment.tz(endDateStr, companyTimezone).endOf("day").toDate();
+
+    // Only recompute timelogs where scheduledHours is null — these are the ones
+    // where computeTimeLogSummary ran before shifts were assigned (stale compute).
+    const timelogs = await prisma.timeLog.findMany({
+      where: {
+        timeIn:         { gte: cutoffPeriod.periodStart, lte: periodEndEOD },
+        timeOut:        { not: null },
+        scheduledHours: null,
+        user:           { companyId },
+      },
+      select: { id: true },
+    });
+
+    let recomputed     = 0;
+    let recomputeFailed = 0;
+    for (const tl of timelogs) {
+      try {
+        await computeTimeLogSummary(tl.id);
+        recomputed++;
+      } catch (e) {
+        console.error(`[sync] recompute failed for timeLog ${tl.id}:`, e.message);
+        recomputeFailed++;
+      }
+    }
+
     const total = await prisma.timeLogApproval.count({
       where: { cutoffPeriodId: id },
     });
 
+    const parts = [];
+    if (created > 0)         parts.push(`${created} new approval record(s) created`);
+    if (recomputed > 0)      parts.push(`${recomputed} time log(s) recomputed`);
+    if (recomputeFailed > 0) parts.push(`${recomputeFailed} recompute(s) failed`);
+
     return res.status(200).json({
-      message: created > 0
-        ? `Sync complete. ${created} new approval record(s) created.`
-        : "Already in sync — no new records needed.",
-      data: { created, total },
+      message: `Sync complete. ${parts.length > 0 ? parts.join(", ") + "." : "Already in sync — nothing to do."}`,
+      data: { created, total, recomputed, recomputeFailed },
     });
   } catch (error) {
     console.error("❌ syncCutoffApprovals:", error);

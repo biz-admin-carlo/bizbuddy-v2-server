@@ -4,14 +4,30 @@ const { prisma } = require("@config/connection");
 const { createNotification } = require("@services/notificationService");
 const moment = require("moment-timezone");
 
-// Parses a clock time string in the context of a known timezone.
-// If the string already carries an offset (e.g. +08:00 or Z), it is used as-is.
-// If it is naive (no offset), it is interpreted as local time in companyTimezone.
 function parseClockTime(str, companyTimezone) {
   if (/Z$|[+-]\d{2}:\d{2}$/.test(str)) {
     return new Date(str);
   }
   return moment.tz(str, companyTimezone).toDate();
+}
+
+// Returns the first TimeLog that overlaps [clockIn, clockOut) for the given user.
+// A null timeOut (currently clocked in) is always treated as a conflict.
+async function findOverlappingLog(userId, clockIn, clockOut) {
+  return prisma.timeLog.findFirst({
+    where: {
+      userId,
+      AND: [
+        { timeIn: { lt: clockOut } },
+        {
+          OR: [
+            { timeOut: { gt: clockIn } },
+            { timeOut: null },
+          ],
+        },
+      ],
+    },
+  });
 }
 
 const submitRequestPunchLog = async (req, res) => {
@@ -50,22 +66,14 @@ const submitRequestPunchLog = async (req, res) => {
       return res.status(400).json({ message: "Invalid requestedClockIn or requestedClockOut." });
     }
 
-    // Date-range boundaries anchored to company timezone so the duplicate check
-    // matches the same calendar day the employee intended
-    const dayStart = moment.tz(requestedDate, companyTimezone).startOf("day").toDate();
-    const dayEnd   = moment.tz(requestedDate, companyTimezone).endOf("day").toDate();
-
-    // Check if a time log already exists for this date
-    const existingLog = await prisma.timeLog.findFirst({
-      where: {
-        userId,
-        timeIn: { gte: dayStart, lte: dayEnd },
-      },
-    });
-
-    if (existingLog) {
+    // Block submission if the requested time range overlaps an existing punch log
+    const conflictingLog = await findOverlappingLog(userId, clockIn, clockOut);
+    if (conflictingLog) {
       return res.status(409).json({
-        message: "A punch log already exists for this date. Use 'Contest Times' to modify it instead."
+        message: "Your requested time conflicts with an existing punch log for this period.",
+        conflictingLogId: conflictingLog.id,
+        conflictingTimeIn: conflictingLog.timeIn,
+        conflictingTimeOut: conflictingLog.timeOut,
       });
     }
 
@@ -348,20 +356,16 @@ const approveRequestedPunchLog = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized." });
     }
 
-    // Check if punch log already exists (race condition check)
-    const existingLog = await prisma.timeLog.findFirst({
-      where: {
-        userId: request.userId,
-        timeIn: {
-          gte: new Date(request.requestedDate.toISOString().split('T')[0] + "T00:00:00"),
-          lt: new Date(new Date(request.requestedDate).setDate(request.requestedDate.getDate() + 1)),
-        },
-      },
-    });
-
-    if (existingLog) {
-      return res.status(409).json({ 
-        message: "A punch log already exists for this date." 
+    // Guard against race conditions — recheck overlap at approval time
+    const conflictingLog = await findOverlappingLog(
+      request.userId,
+      request.requestedClockIn,
+      request.requestedClockOut,
+    );
+    if (conflictingLog) {
+      return res.status(409).json({
+        message: "Cannot approve: the requested time now conflicts with an existing punch log.",
+        conflictingLogId: conflictingLog.id,
       });
     }
 
@@ -559,8 +563,49 @@ const deleteRequestedPunchLog = async (req, res) => {
   }
 };
 
+const checkConflict = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { requestedClockIn, requestedClockOut } = req.body;
+
+    if (!requestedClockIn || !requestedClockOut) {
+      return res.status(400).json({ message: "Missing required fields: requestedClockIn, requestedClockOut" });
+    }
+
+    const company = await prisma.company.findUnique({
+      where: { id: req.user.companyId },
+      select: { timeZone: true },
+    });
+    const companyTimezone = company?.timeZone || "UTC";
+
+    const clockIn  = parseClockTime(requestedClockIn,  companyTimezone);
+    const clockOut = parseClockTime(requestedClockOut, companyTimezone);
+
+    if (isNaN(clockIn) || isNaN(clockOut)) {
+      return res.status(400).json({ message: "Invalid requestedClockIn or requestedClockOut." });
+    }
+
+    if (clockIn >= clockOut) {
+      return res.status(400).json({ message: "Clock-in time must be before clock-out time." });
+    }
+
+    const conflictingLog = await findOverlappingLog(userId, clockIn, clockOut);
+
+    return res.status(200).json({
+      hasConflict: !!conflictingLog,
+      conflictingLogId: conflictingLog?.id || null,
+      conflictingTimeIn: conflictingLog?.timeIn || null,
+      conflictingTimeOut: conflictingLog?.timeOut || null,
+    });
+  } catch (error) {
+    console.error("❌ Error checking punch log conflict:", error);
+    return res.status(500).json({ message: "Internal server error.", error: error.message });
+  }
+};
+
 module.exports = {
   submitRequestPunchLog,
+  checkConflict,
   viewMyRequestedPunchLogs,
   viewAllRequestedPunchLogs,
   approveRequestedPunchLog,
