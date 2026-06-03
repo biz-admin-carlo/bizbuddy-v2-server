@@ -81,14 +81,21 @@ async function checkMissedClockOuts() {
         const clockInTime = moment(timeLog.timeIn).tz(timezone);
         const timeSinceClockIn = now.diff(clockInTime, 'minutes');
 
-        // Find the shift for this time log
+        // Find the shift for this time log.
+        // assignedDate is stored as UTC midnight of the calendar date (2026-06-03T00:00:00Z).
+        // startOf('day').toDate() in a negative-offset timezone (e.g. PDT = UTC-7) produces
+        // 2026-06-03T07:00:00Z — which no longer matches the stored date and instead matches
+        // the next day's assignment. Use the local date string to build a UTC-midnight range
+        // that lines up with how assignedDate is stored, regardless of timezone offset.
+        const localDateStr = clockInTime.format('YYYY-MM-DD');
+        const dayStart = new Date(`${localDateStr}T00:00:00.000Z`);
+        const dayEnd   = new Date(`${localDateStr}T23:59:59.999Z`);
+
         const userShift = await prisma.userShift.findFirst({
           where: {
             userId: timeLog.userId,
-            assignedDate: {
-              gte: clockInTime.clone().startOf('day').toDate(),
-              lte: clockInTime.clone().endOf('day').toDate(),
-            },
+            status: { not: 'cancelled' },
+            assignedDate: { gte: dayStart, lte: dayEnd },
           },
           include: { shift: true },
         });

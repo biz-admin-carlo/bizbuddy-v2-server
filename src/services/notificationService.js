@@ -172,7 +172,7 @@ async function notifyMissedClockOut(employee, timeLog, company) {
     departmentId: user.departmentId,
     notificationCode: "MISSED_CLOCK_OUT",
     title: "⏰ Missed Clock-Out",
-    message: `You haven't clocked out yet. Your shift ended at ${new Date(timeLog.expectedClockOut).toLocaleTimeString("en-US")}.`,
+    message: `You haven't clocked out yet. Your shift ended at ${new Date(timeLog.expectedClockOut).toLocaleTimeString("en-US", { timeZone: company.timeZone || "America/Los_Angeles" })}.`,
     payload: {
       timeLogId: timeLog.id,
       clockInTime: timeLog.timeIn,
@@ -190,10 +190,8 @@ async function notifyMissedClockOut(employee, timeLog, company) {
         employeeName:
           `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() ||
           user.username,
-        clockInTime: new Date(timeLog.timeIn).toLocaleTimeString("en-US"),
-        expectedClockOut: new Date(timeLog.expectedClockOut).toLocaleTimeString(
-          "en-US",
-        ),
+        clockInTime: new Date(timeLog.timeIn).toLocaleTimeString("en-US", { timeZone: company.timeZone || "America/Los_Angeles" }),
+        expectedClockOut: new Date(timeLog.expectedClockOut).toLocaleTimeString("en-US", { timeZone: company.timeZone || "America/Los_Angeles" }),
         hoursWorked: timeLog.hoursWorked,
         appUrl: process.env.CLIENT_URL,
       },

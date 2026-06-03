@@ -210,15 +210,20 @@ async function approveSingle(approvalId, {
     };
     const segHours = segHoursMap[approval.segmentType];
 
-    // "schedule" → store the segment window as approved times so the client
-    // can display the cleaned per-segment In/Out after approval.
-    // "raw" (or absent) → store the actual overall punch times.
+    // "schedule" → snap clock-in to segment window start.
+    // "raw"      → use the actual punch-in time, but still cap at segment end —
+    //              raw means don't snap clock-in, not ignore the window boundary.
     const approvedIn  = approvalMode === "schedule" && approval.segmentStart
       ? new Date(approval.segmentStart)
       : new Date(timeLog.timeIn);
-    const approvedOut = approvalMode === "schedule" && approval.segmentEnd
+    const approvedOut = approval.segmentEnd
       ? new Date(approval.segmentEnd)
       : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
+
+    // Recalculate hours from actual approved window (raw in → segment end may differ).
+    const approvedSegHours = approvedIn && approvedOut
+      ? calculateHours(approvedIn, approvedOut)
+      : (segHours != null ? parseFloat(segHours.toString()) : null);
 
     const updated = await prisma.timeLogApproval.update({
       where: { id: approvalId },
@@ -228,8 +233,8 @@ async function approveSingle(approvalId, {
         approvedAt:       new Date(),
         approvedClockIn:  approvedIn,
         approvedClockOut: approvedOut,
-        scheduledHours:   segHours != null ? parseFloat(segHours.toString()) : null,
-        actualHours:      segHours != null ? parseFloat(segHours.toString()) : null,
+        scheduledHours:   approvedSegHours != null ? parseFloat(approvedSegHours.toFixed(2)) : null,
+        actualHours:      approvedSegHours != null ? parseFloat(approvedSegHours.toFixed(2)) : null,
         ...(notes && { notes }),
       },
     });
@@ -424,9 +429,13 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, u
         const approvedIn  = approvalMode === "schedule" && approval.segmentStart
           ? new Date(approval.segmentStart)
           : new Date(timeLog.timeIn);
-        const approvedOut = approvalMode === "schedule" && approval.segmentEnd
+        const approvedOut = approval.segmentEnd
           ? new Date(approval.segmentEnd)
           : (timeLog.timeOut ? new Date(timeLog.timeOut) : null);
+
+        const approvedSegHours = approvedIn && approvedOut
+          ? calculateHours(approvedIn, approvedOut)
+          : (segHours != null ? parseFloat(segHours.toString()) : null);
 
         await prisma.timeLogApproval.update({
           where: { id: approval.id },
@@ -436,8 +445,8 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, u
             approvedAt:       new Date(),
             approvedClockIn:  approvedIn,
             approvedClockOut: approvedOut,
-            scheduledHours:   segHours != null ? parseFloat(segHours.toString()) : null,
-            actualHours:      segHours != null ? parseFloat(segHours.toString()) : null,
+            scheduledHours:   approvedSegHours != null ? parseFloat(approvedSegHours.toFixed(2)) : null,
+            actualHours:      approvedSegHours != null ? parseFloat(approvedSegHours.toFixed(2)) : null,
             ...(notes && { notes }),
           },
         });
