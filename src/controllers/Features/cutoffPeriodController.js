@@ -20,6 +20,7 @@ const moment = require("moment-timezone");
 const { randomUUID } = require("crypto");
 const { createNotification } = require("@services/notificationService");
 const { resolveDriverAideSegments, computeTimeLogSummary } = require("@services/timeLogComputeService");
+const { applyAutoBreaks } = require("@services/autoBreakService");
 const { BNC_COMPANY_IDS } = require("@config/companyTypes");
 const daycareCutoffStrategy                        = require("@services/Cutoff/daycareCutoffStrategy");
 const bncCutoffStrategy                            = require("@services/Cutoff/bncCutoffStrategy");
@@ -778,27 +779,35 @@ const syncCutoffApprovals = async (req, res) => {
     const endDateStr  = new Date(cutoffPeriod.periodEnd).toISOString().slice(0, 10);
     const periodEndEOD = moment.tz(endDateStr, companyTimezone).endOf("day").toDate();
 
-    // Only recompute timelogs where scheduledHours is null — these are the ones
-    // where computeTimeLogSummary ran before shifts were assigned (stale compute).
+    // Recompute all completed timelogs in the period — picks up shifts assigned
+    // after the original clock-out compute (stale scheduledHours, lateHours,
+    // undertimeHours, lunchDeductionMinutes on the TimeLog record).
     const timelogs = await prisma.timeLog.findMany({
       where: {
-        timeIn:         { gte: cutoffPeriod.periodStart, lte: periodEndEOD },
-        timeOut:        { not: null },
-        scheduledHours: null,
-        user:           { companyId },
+        timeIn:  { gte: cutoffPeriod.periodStart, lte: periodEndEOD },
+        timeOut: { not: null },
+        user:    { companyId },
       },
-      select: { id: true },
+      select: { id: true, userId: true },
     });
 
     let recomputed     = 0;
     let recomputeFailed = 0;
-    for (const tl of timelogs) {
-      try {
-        await computeTimeLogSummary(tl.id);
-        recomputed++;
-      } catch (e) {
-        console.error(`[sync] recompute failed for timeLog ${tl.id}:`, e.message);
-        recomputeFailed++;
+    const BATCH = 20;
+    for (let i = 0; i < timelogs.length; i += BATCH) {
+      const batch = timelogs.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(async (tl) => {
+          await applyAutoBreaks(tl.id, tl.userId);
+          await computeTimeLogSummary(tl.id);
+        })
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled") recomputed++;
+        else {
+          console.error(`[sync] recompute failed:`, r.reason?.message);
+          recomputeFailed++;
+        }
       }
     }
 
@@ -891,17 +900,6 @@ const getCutoffApprovals = async (req, res) => {
 
           console.log(`[✅ Backfill] Populated segmentStart/segmentEnd for ${nullSegmentApprovals.length} DRIVER_AIDE approval(s) in cutoff ${id}`);
         }
-      }
-    }
-
-    // ✅ B&C: recompute OT blocks before building the response so the otBlocks
-    // array is always current — covers existing approved punches and any missed
-    // recomputes from previous approval actions.
-    if (BNC_COMPANY_IDS.has(companyId)) {
-      try {
-        await recomputeAllOtForCutoff(id, companyId);
-      } catch (e) {
-        console.error("[OT] recomputeAllOtForCutoff on load failed:", e.message);
       }
     }
 
