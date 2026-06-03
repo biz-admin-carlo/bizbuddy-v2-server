@@ -103,16 +103,20 @@ async function applyAutoBreaks(timeLogId, userId) {
       const lunchStart = new Date(timeIn.getTime() + afterMs);
       const lunchEnd = new Date(lunchStart.getTime() + durationMins * 60 * 1000);
 
-      updates.lunchBreak = {
-        start: lunchStart.toISOString(),
-        end: lunchEnd.toISOString(),
-        auto: true,
-        deductible: config.autoBreakLunchDeductible,
-      };
-      updates.autoLunchApplied = true;
+      // Skip if the full lunch period would extend past clock-out —
+      // employee didn't work long enough to complete the break.
+      if (lunchEnd <= timeOut) {
+        updates.lunchBreak = {
+          start: lunchStart.toISOString(),
+          end: lunchEnd.toISOString(),
+          auto: true,
+          deductible: config.autoBreakLunchDeductible,
+        };
+        updates.autoLunchApplied = true;
 
-      if (config.autoBreakLunchDeductible) {
-        updates.autoLunchDeductionMinutes = durationMins;
+        if (config.autoBreakLunchDeductible) {
+          updates.autoLunchDeductionMinutes = durationMins;
+        }
       }
     }
   }

@@ -6,6 +6,19 @@
 
 ## Bug Fixes
 
+### Auto-lunch applied when employee clocked out before the break window completed
+
+**Files changed:**
+- `src/services/autoBreakService.js`
+
+**Root cause:**  
+`applyAutoBreaks` scheduled `lunchBreak.start/end` without checking whether the computed `lunchEnd` fell before `timeOut`. If an employee clocked out before the auto-lunch window would have finished (e.g. left early, short shift), the break was still written — producing a `lunchBreak.end` that extended past the actual clock-out time and incorrectly deducted lunch from hours that weren't worked.
+
+**Fix:**  
+Added a `lunchEnd <= timeOut` guard before writing the `lunchBreak` block. Auto-lunch is only applied when the employee worked long enough that the full break would complete within their shift. If the break window overruns clock-out, the lunch is skipped entirely and no deduction is recorded.
+
+---
+
 ### Sync re-run does not populate `lunchBreak` start/end
 
 **Files changed:**
