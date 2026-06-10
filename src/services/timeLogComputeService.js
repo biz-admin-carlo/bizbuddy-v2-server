@@ -238,7 +238,7 @@ async function computeTimeLogSummary(timeLogId) {
   }
 
   const timeIn  = new Date(log.timeIn);
-  const timeOut = new Date(log.timeOut);
+  let   timeOut = new Date(log.timeOut);
 
   // Punch type flags — used throughout
   const isDriverAm  = log.punchType === "DRIVER_AIDE_AM"  || log.punchType === "DRIVER_AIDE";
@@ -249,11 +249,12 @@ async function computeTimeLogSummary(timeLogId) {
   const company = await prisma.company.findUnique({
     where: { id: log.user.companyId },
     select: {
-      timeZone:                 true,
-      gracePeriodMinutes:       true,
-      minimumLunchMinutes:      true,
-      defaultShiftHours:        true,
-      earlyClockInGraceMinutes: true,
+      timeZone:                  true,
+      gracePeriodMinutes:        true,
+      minimumLunchMinutes:       true,
+      defaultShiftHours:         true,
+      earlyClockInGraceMinutes:  true,
+      earlyClockOutGraceMinutes: true,
     },
   });
 
@@ -262,7 +263,8 @@ async function computeTimeLogSummary(timeLogId) {
   const minimumLunchMins          = company?.minimumLunchMinutes ?? 60;
   const defaultShiftHours         = parseFloat(company?.defaultShiftHours ?? 8);
   const graceMs                   = (gracePeriodMinutes * 60 + 59) * 1000;
-  const earlyClockInGraceMinutes  = company?.earlyClockInGraceMinutes ?? null;
+  const earlyClockInGraceMinutes   = company?.earlyClockInGraceMinutes  ?? null;
+  const earlyClockOutGraceMinutes  = company?.earlyClockOutGraceMinutes ?? 20;
 
   // ── 3. Fetch ALL UserShifts for the clock-in date ───────────────────────────
   // Driver employees have three shifts per day (AM, Regular, PM). Fetching all
@@ -379,6 +381,30 @@ async function computeTimeLogSummary(timeLogId) {
           `[computeTimeLogSummary] Catalog shifts not found for companyId=${log.user.companyId}: ` +
           `${missing.join(", ")}. Some segment hours will be null for ${timeLogId}.`
         );
+      }
+    }
+  }
+
+  // ── 4b. Early clock-out snap for DA/PM ──────────────────────────────────────
+  // If a DRIVER_AIDE or DRIVER_AIDE_PM employee clocks out within
+  // earlyClockOutGraceMinutes of their PM shift end, snap timeOut forward to
+  // that boundary. The snapped value is persisted so all views and all computed
+  // fields (grossHours, segmentHours, undertime, OT) reflect the adjustment.
+  let timeOutSnapped = false;
+  if (isDriverPm) {
+    const earlyClockOutGraceMs = earlyClockOutGraceMinutes * 60 * 1000;
+    const pmSrc =
+      userShifts.find((us) => us.shift?.shiftName === "Driver/Aide PM Shift")?.shift ??
+      catalogShiftMap["Driver/Aide PM Shift"] ??
+      null;
+    if (pmSrc?.endTime) {
+      const pmEnd = combineDateWithTimeTz(timeIn, pmSrc.endTime, tz);
+      if (timeOut < pmEnd) {
+        const earlyByMs = pmEnd.getTime() - timeOut.getTime();
+        if (earlyByMs <= earlyClockOutGraceMs) {
+          timeOut = pmEnd;
+          timeOutSnapped = true;
+        }
       }
     }
   }
@@ -616,6 +642,7 @@ async function computeTimeLogSummary(timeLogId) {
     grossHours,
     isTooEarlyPunch,
     calculatedAt:          new Date(),
+    ...(timeOutSnapped && { timeOut }),
   };
 
   await prisma.timeLog.update({
@@ -636,7 +663,8 @@ async function computeTimeLogSummary(timeLogId) {
     (isDriverLog
       ? ` | segs=[AM:${driverAmSegmentHours ?? "-"} REG:${regularSegmentHours ?? "-"} PM:${driverPmSegmentHours ?? "-"}]`
       : "") +
-    (isTooEarlyPunch ? ` | ⚠️ TOO_EARLY(${Math.round(earlyByMs / 60000)}min)` : "") +
+    (isTooEarlyPunch  ? ` | ⚠️ TOO_EARLY(${Math.round(earlyByMs / 60000)}min)` : "") +
+    (timeOutSnapped   ? ` | ⏱️ CLOCK_OUT_SNAPPED` : "") +
     ` | tz=${tz}`
   );
 

@@ -1,0 +1,2 @@
+ALTER TABLE "Company"
+  ADD COLUMN IF NOT EXISTS "earlyClockOutGraceMinutes" INTEGER DEFAULT 20;
