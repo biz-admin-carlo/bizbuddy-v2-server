@@ -512,6 +512,7 @@ model Company {
   driverAideThresholdMinutes       Int? @default(45)
   shiftAssignmentWindowMinutes     Int  @default(30)
   earlyClockInGraceMinutes         Int?  // DayCare: max minutes early before punch is NOT snapped to shift start and is flagged as too early; null = always snap
+  earlyClockOutGraceMinutes        Int?  @default(20) // DA/PM only: snap clock-out to PM shift end when early by ≤ N min
 
 
 

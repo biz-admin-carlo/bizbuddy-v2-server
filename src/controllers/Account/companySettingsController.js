@@ -19,15 +19,16 @@ exports.getSettings = async (req, res) => {
         currency: true,
         language: true,
         timeZone: true,
-        driverAideThresholdMinutes:   true,
-        shiftAssignmentWindowMinutes: true,
-        earlyClockInGraceMinutes:     true,
-        autoClockOutWarningHours:     true,
-        autoClockOutGraceHours:       true,
-        autoClockOutNotifyEmails:     true,
-        multiApprovalEnabled:         true,
-        secondaryApproverId:          true,
-        companyCutoffSettings:        true,
+        driverAideThresholdMinutes:    true,
+        shiftAssignmentWindowMinutes:  true,
+        earlyClockInGraceMinutes:      true,
+        earlyClockOutGraceMinutes:     true,
+        autoClockOutWarningHours:      true,
+        autoClockOutGraceHours:        true,
+        autoClockOutNotifyEmails:      true,
+        multiApprovalEnabled:          true,
+        secondaryApproverId:           true,
+        companyCutoffSettings:         true,
         autoBreakBasis:               true,
         autoLunchEnabled:             true,
         autoCoffeeEnabled:            true,
@@ -84,6 +85,7 @@ exports.updateSettings = async (req, res) => {
       driverAideThresholdMinutes,
       shiftAssignmentWindowMinutes,
       earlyClockInGraceMinutes,
+      earlyClockOutGraceMinutes,
       autoClockOutWarningHours,
       autoClockOutGraceHours,
       autoClockOutNotifyEmails,
@@ -154,6 +156,14 @@ exports.updateSettings = async (req, res) => {
                 ? earlyClockInGraceMinutes
                 : undefined,
         }),
+        ...(earlyClockOutGraceMinutes !== undefined && {
+          earlyClockOutGraceMinutes:
+            earlyClockOutGraceMinutes === null
+              ? 20
+              : Number.isInteger(earlyClockOutGraceMinutes) && earlyClockOutGraceMinutes > 0
+                ? earlyClockOutGraceMinutes
+                : undefined,
+        }),
         // ── Auto clock-out config ─────────────────────────────────────────────
         ...(autoClockOutWarningHours !== undefined && {
           autoClockOutWarningHours:
@@ -196,17 +206,18 @@ exports.updateSettings = async (req, res) => {
         currency: true,
         language: true,
         timeZone: true,
-        driverAideThresholdMinutes:   true,
-        shiftAssignmentWindowMinutes: true,
-        earlyClockInGraceMinutes:     true,
-        autoClockOutWarningHours:     true,
-        autoClockOutGraceHours:       true,
-        autoClockOutNotifyEmails:     true,
-        multiApprovalEnabled:         true,
-        secondaryApproverId:          true,
-        autoBreakBasis:               true,
-        autoLunchEnabled:             true,
-        autoCoffeeEnabled:            true,
+        driverAideThresholdMinutes:    true,
+        shiftAssignmentWindowMinutes:  true,
+        earlyClockInGraceMinutes:      true,
+        earlyClockOutGraceMinutes:     true,
+        autoClockOutWarningHours:      true,
+        autoClockOutGraceHours:        true,
+        autoClockOutNotifyEmails:      true,
+        multiApprovalEnabled:          true,
+        secondaryApproverId:           true,
+        autoBreakBasis:                true,
+        autoLunchEnabled:              true,
+        autoCoffeeEnabled:             true,
       },
     });
 
