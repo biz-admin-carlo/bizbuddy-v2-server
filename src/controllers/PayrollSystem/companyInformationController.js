@@ -82,6 +82,8 @@ exports.getCompanySettings = async (req, res) => {
           payFrequency: 'biweekly',
           ptoEnabled: true,
           ptoLabel: 'PTO',
+          futaEnabled: false,
+          sutaEnabled: false,
         }
       });
     }
@@ -118,6 +120,8 @@ exports.getCompanySettings = async (req, res) => {
           payFrequency: payrollConfig.payFrequency,
           ptoEnabled: payrollConfig.ptoEnabled,
           ptoLabel: payrollConfig.ptoLabel,
+          futaEnabled: payrollConfig.futaEnabled,
+          sutaEnabled: payrollConfig.sutaEnabled,
         },
         earningTypes: earningTypes.map(et => ({
           id: et.id,
@@ -154,7 +158,7 @@ exports.getCompanySettings = async (req, res) => {
 exports.updatePayrollConfig = async (req, res) => {
   try {
     const { companyId } = req.user;
-    const { payFrequency, ptoEnabled, ptoLabel } = req.body;
+    const { payFrequency, ptoEnabled, ptoLabel, futaEnabled, sutaEnabled } = req.body;
 
     if (!companyId) {
       return res.status(400).json({ 
@@ -190,6 +194,8 @@ exports.updatePayrollConfig = async (req, res) => {
     if (payFrequency) updateData.payFrequency = payFrequency.toLowerCase();
     if (ptoEnabled !== undefined) updateData.ptoEnabled = Boolean(ptoEnabled);
     if (ptoLabel) updateData.ptoLabel = ptoLabel.trim();
+    if (futaEnabled !== undefined) updateData.futaEnabled = Boolean(futaEnabled);
+    if (sutaEnabled !== undefined) updateData.sutaEnabled = Boolean(sutaEnabled);
 
     // Update or create
     const payrollConfig = await prisma.payrollConfiguration.upsert({
@@ -200,6 +206,8 @@ exports.updatePayrollConfig = async (req, res) => {
         payFrequency: payFrequency?.toLowerCase() || 'biweekly',
         ptoEnabled: ptoEnabled !== undefined ? Boolean(ptoEnabled) : true,
         ptoLabel: ptoLabel?.trim() || 'PTO',
+        futaEnabled: futaEnabled !== undefined ? Boolean(futaEnabled) : false,
+        sutaEnabled: sutaEnabled !== undefined ? Boolean(sutaEnabled) : false,
       }
     });
 
@@ -211,6 +219,8 @@ exports.updatePayrollConfig = async (req, res) => {
         payFrequency: payrollConfig.payFrequency,
         ptoEnabled: payrollConfig.ptoEnabled,
         ptoLabel: payrollConfig.ptoLabel,
+        futaEnabled: payrollConfig.futaEnabled,
+        sutaEnabled: payrollConfig.sutaEnabled,
       }
     });
 

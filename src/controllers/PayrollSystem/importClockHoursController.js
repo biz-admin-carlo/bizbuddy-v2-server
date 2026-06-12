@@ -141,6 +141,41 @@ const getRRuleOccurrences = (rruleString, rangeStart, rangeEnd, scheduleStart, s
 };
 
 /**
+ * Expand ShiftSchedule.daysOfWeek into concrete dates within a range.
+ * daysOfWeek uses JS convention: 0=Sun … 6=Sat (matches shiftScheduleController).
+ */
+const getDaysOfWeekOccurrences = (daysOfWeek, rangeStart, rangeEnd, scheduleStart, scheduleEnd) => {
+  const daysAsNumbers = daysOfWeek.map((d) => parseInt(d, 10)).filter((d) => d >= 0 && d <= 6);
+  if (daysAsNumbers.length === 0) return [];
+
+  const effectiveStart = new Date(Math.max(
+    new Date(scheduleStart).getTime(),
+    new Date(rangeStart).getTime()
+  ));
+  const effectiveEnd = new Date(Math.min(
+    new Date(scheduleEnd).getTime(),
+    new Date(rangeEnd).getTime()
+  ));
+
+  if (effectiveStart > effectiveEnd) return [];
+
+  const occurrences = [];
+  const current = new Date(effectiveStart);
+  current.setHours(0, 0, 0, 0);
+  const end = new Date(effectiveEnd);
+  end.setHours(23, 59, 59, 999);
+
+  while (current <= end) {
+    if (daysAsNumbers.includes(current.getDay())) {
+      occurrences.push(new Date(current));
+    }
+    current.setDate(current.getDate() + 1);
+  }
+
+  return occurrences;
+};
+
+/**
  * Calculate break deductions based on department policy
  * @param {Object} timeLog - TimeLog with coffeeBreaks and lunchBreak
  * @param {Object} department - Department with break policies
@@ -411,33 +446,26 @@ const buildScheduleLookup = async (employees, periodStart, periodEnd, companyId)
   // 2. FETCH SHIFT SCHEDULES (recurring schedules with RRULE)
   // ─────────────────────────────────────────────────────────
   
-  // Build assignment conditions
+  // Match current ShiftSchedule schema: assignmentType + targetId + daysOfWeek
   const assignmentConditions = [
-    { assignedToAll: true },
-    { assignedUserId: { in: userIds } },
+    { assignmentType: "all" },
+    { assignmentType: "individual", targetId: { in: userIds } },
   ];
-  
-  // Only add department condition if there are departments
+
   if (departmentIds.length > 0) {
-    assignmentConditions.push({ 
-      assignedToDepartment: true, 
-      departmentId: { in: departmentIds } 
+    assignmentConditions.push({
+      assignmentType: "department",
+      targetId: { in: departmentIds },
     });
   }
 
   const shiftSchedules = await prisma.shiftSchedule.findMany({
     where: {
       companyId,
+      isActive: true,
       startDate: { lte: periodEnd },
-      AND: [
-        { OR: assignmentConditions },
-        {
-          OR: [
-            { endDate: null },
-            { endDate: { gte: periodStart } },
-          ],
-        },
-      ],
+      endDate: { gte: periodStart },
+      OR: assignmentConditions,
     },
     include: {
       shift: true,
@@ -473,30 +501,33 @@ const buildScheduleLookup = async (employees, periodStart, periodEnd, companyId)
     });
   });
 
-  // Process ShiftSchedules (RRULE-based)
+  // Process ShiftSchedules (daysOfWeek-based recurring assignments)
   for (const schedule of shiftSchedules) {
-    if (!schedule.recurrencePattern || !schedule.shift) continue;
+    if (!schedule.shift) continue;
 
-    // Get occurrences within period
-    const occurrences = getRRuleOccurrences(
-      schedule.recurrencePattern,
+    const daysOfWeek = Array.isArray(schedule.daysOfWeek) ? schedule.daysOfWeek : [];
+    if (daysOfWeek.length === 0) continue;
+
+    const occurrences = getDaysOfWeekOccurrences(
+      daysOfWeek,
       periodStart,
       periodEnd,
       schedule.startDate,
       schedule.endDate
     );
 
-    // Determine which employees this schedule applies to
     let applicableUserIds = [];
 
-    if (schedule.assignedToAll) {
+    if (schedule.assignmentType === "all") {
       applicableUserIds = userIds;
-    } else if (schedule.assignedUserId) {
-      applicableUserIds = [schedule.assignedUserId];
-    } else if (schedule.assignedToDepartment && schedule.departmentId) {
+    } else if (schedule.assignmentType === "individual" && schedule.targetId) {
+      if (userIds.includes(schedule.targetId)) {
+        applicableUserIds = [schedule.targetId];
+      }
+    } else if (schedule.assignmentType === "department" && schedule.targetId) {
       applicableUserIds = employees
-        .filter(e => e.departmentId === schedule.departmentId)
-        .map(e => e.id);
+        .filter((e) => e.departmentId === schedule.targetId)
+        .map((e) => e.id);
     }
 
     // Add to lookup for each occurrence and applicable employee
