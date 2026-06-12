@@ -253,6 +253,8 @@ model PayrollConfiguration {
   payFrequency String   @default("biweekly")
   ptoEnabled   Boolean  @default(true)
   ptoLabel     String   @default("PTO")
+  futaEnabled  Boolean  @default(false)
+  sutaEnabled  Boolean  @default(false)
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
   updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
   company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
