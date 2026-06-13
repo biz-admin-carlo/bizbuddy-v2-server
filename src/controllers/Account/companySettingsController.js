@@ -1,5 +1,6 @@
 // src/controllers/Account/companySettingsController.js
-const { prisma } = require("@config/connection");
+const { prisma }           = require("@config/connection");
+const { BNC_COMPANY_IDS }  = require("@config/companyTypes");
 
 exports.getSettings = async (req, res) => {
   try {
@@ -54,6 +55,8 @@ exports.getSettings = async (req, res) => {
 
     delete formatted.timeZone;
     delete formatted.companyCutoffSettings;
+
+    formatted.isBNC = BNC_COMPANY_IDS.has(company.id);
 
     return res.json({ data: formatted });
   } catch (e) {

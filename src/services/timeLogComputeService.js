@@ -806,10 +806,13 @@ async function resolveDriverAideSegments(driverLogs, companyId) {
     include: { shift: true },
   });
 
-  // Group by `${userId}_${YYYY-MM-DD}` for O(1) lookup per log
+  // Group by `${userId}_${YYYY-MM-DD}` for O(1) lookup per log.
+  // assignedDate is @db.Date stored as midnight UTC — use the UTC date string directly
+  // rather than converting through the company timezone, which would shift the date
+  // back by one day for companies west of UTC (e.g. America/Los_Angeles).
   const shiftsByUserDate = {};
   for (const us of allUserShifts) {
-    const key = `${us.userId}_${moment(us.assignedDate).tz(tz).format("YYYY-MM-DD")}`;
+    const key = `${us.userId}_${new Date(us.assignedDate).toISOString().slice(0, 10)}`;
     if (!shiftsByUserDate[key]) shiftsByUserDate[key] = [];
     shiftsByUserDate[key].push(us);
   }

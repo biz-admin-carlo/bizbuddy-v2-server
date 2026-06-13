@@ -9,6 +9,8 @@
 const { prisma }                = require("@config/connection");
 const moment                    = require("moment-timezone");
 const { computeTimeLogSummary } = require("@services/timeLogComputeService");
+const { recomputeOtForTimeLog,
+        recomputeAllOtForCutoff } = require("./cutoffOtService");
 
 // ── Strategy-level HTTP error ─────────────────────────────────────────────────
 class StrategyError extends Error {
@@ -26,7 +28,7 @@ function calculateHours(timeIn, timeOut) {
   return (new Date(timeOut) - new Date(timeIn)) / 3600000;
 }
 
-function combineDateTime(date, time, shiftTimezone = "Asia/Manila") {
+function combineDateTime(date, time, shiftTimezone = "America/Los_Angeles") {
   const dateStr = (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
     ? date
     : moment.tz(date, shiftTimezone).format("YYYY-MM-DD");
@@ -175,9 +177,13 @@ async function approveSingle(approvalId, {
   const companyTz          = company?.timeZone || "America/Los_Angeles";
   const timeLog            = approval.timeLog;
 
-  // ── TRAINING: flat credit using company's default shift hours ─────────────
+  // ── TRAINING: cap at defaultShiftHours; use raw if punch is shorter ─────────
   if (timeLog.punchType === "TRAINING") {
-    const trainingHours = parseFloat((company?.defaultShiftHours ?? 8).toString());
+    const maxHours      = parseFloat((company?.defaultShiftHours ?? 8).toString());
+    const punchDuration = timeLog.timeOut
+      ? calculateHours(timeLog.timeIn, timeLog.timeOut)
+      : maxHours;
+    const trainingHours = parseFloat(Math.min(punchDuration, maxHours).toFixed(2));
     const updated = await prisma.timeLogApproval.update({
       where: { id: approvalId },
       data: {
@@ -191,7 +197,10 @@ async function approveSingle(approvalId, {
         ...(notes && { notes }),
       },
     });
-    console.log("[✅ DayCare] Training record approved", approvalId, `(${trainingHours}h)`);
+    recomputeOtForTimeLog(timeLog.id, cutoffPeriodId, companyId).catch((e) =>
+      console.error("[OT] recompute failed after training approve:", e.message)
+    );
+    console.log("[✅ DayCare] Training record approved", approvalId, `(${trainingHours}h — punch ${punchDuration.toFixed(2)}h, cap ${maxHours}h)`);
     return { message: "Training record approved successfully.", data: updated };
   }
 
@@ -238,6 +247,9 @@ async function approveSingle(approvalId, {
         ...(notes && { notes }),
       },
     });
+    recomputeOtForTimeLog(timeLog.id, cutoffPeriodId, companyId).catch((e) =>
+      console.error("[OT] recompute failed after segment approve:", e.message)
+    );
     console.log("[✅ DayCare] Segment approved", approvalId, approval.segmentType, approvalMode === "schedule" ? "(segment window)" : "(raw times)");
     return { message: "Segment approved successfully.", data: updated };
   }
@@ -316,7 +328,7 @@ async function approveSingle(approvalId, {
     });
   }
 
-  const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
+  const actualHours = finalClockOut ? calculateHours(finalClockIn, finalClockOut) : null;
 
   try {
     await computeTimeLogSummary(timeLog.id);
@@ -338,6 +350,9 @@ async function approveSingle(approvalId, {
     },
   });
 
+  recomputeOtForTimeLog(timeLog.id, cutoffPeriodId, companyId).catch((e) =>
+    console.error("[OT] recompute failed after regular approve:", e.message)
+  );
   console.log("[✅ DayCare] Record approved", approvalId, approvalMode === "raw" ? "(raw)" : "(schedule)", withOT ? "(with OT)" : "");
   return { message: "Time log approved successfully.", data: updated };
 }
@@ -374,7 +389,7 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, u
   const gracePeriodMinutes = company?.gracePeriodMinutes ?? 15;
   const graceMs            = (gracePeriodMinutes * 60 + 59) * 1000;
   const companyTz          = company?.timeZone || "America/Los_Angeles";
-  const trainingHours      = parseFloat((company?.defaultShiftHours ?? 8).toString());
+  const maxTrainingHours   = parseFloat((company?.defaultShiftHours ?? 8).toString());
 
   const approvals = await prisma.timeLogApproval.findMany({
     where: {
@@ -394,6 +409,10 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, u
 
       // ── TRAINING ────────────────────────────────────────────────────────
       if (timeLog.punchType === "TRAINING") {
+        const punchDuration   = timeLog.timeOut
+          ? calculateHours(timeLog.timeIn, timeLog.timeOut)
+          : maxTrainingHours;
+        const trainingHours   = parseFloat(Math.min(punchDuration, maxTrainingHours).toFixed(2));
         await prisma.timeLogApproval.update({
           where: { id: approval.id },
           data: {
@@ -516,7 +535,7 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, u
         });
       }
 
-      const actualHours = timeLog.timeOut ? calculateHours(timeLog.timeIn, timeLog.timeOut) : null;
+      const actualHours = finalClockOut ? calculateHours(finalClockIn, finalClockOut) : null;
 
       try { await computeTimeLogSummary(timeLog.id); } catch (_) {}
 
@@ -542,6 +561,13 @@ async function approveBulk(cutoffPeriodId, timeLogIds, { action, approvalMode, u
   }
 
   console.log(`[✅ DayCare] Bulk approve: ${successCount} approved, ${failCount} failed`);
+
+  if (successCount > 0) {
+    recomputeAllOtForCutoff(cutoffPeriodId, companyId).catch((e) =>
+      console.error("[OT] recomputeAllOt failed after bulk approve:", e.message)
+    );
+  }
+
   return {
     message: `${successCount} time log(s) approved successfully.${failCount > 0 ? ` ${failCount} failed.` : ""}`,
     data:    { approved: successCount, failed: failCount },
@@ -654,6 +680,10 @@ async function resolveConflict(approvalId, { cutoffPeriodId, choice, userId, com
       notes:            "Conflict resolved — punch takes precedence",
     },
   });
+
+  recomputeOtForTimeLog(timeLog.id, cutoffPeriodId, companyId).catch((e) =>
+    console.error("[OT] recompute failed after conflict resolve:", e.message)
+  );
 
   // Cancel leave + return credit (best-effort — don't fail the whole operation)
   let leaveCancelled = false;

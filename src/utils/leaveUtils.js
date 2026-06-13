@@ -55,7 +55,7 @@ async function calcRequestedHours(userId, startISO, endISO) {
     holidays.map((h) => moment(h.date).tz(tz).format("YYYY-MM-DD"))
   );
 
-  // ── 2. Fetch UserShifts for this employee in the range ──────────────────────
+  // ── 2. Fetch UserShifts with actual shift duration ──────────────────────────
   const userShifts = await prisma.userShift.findMany({
     where: {
       userId,
@@ -65,42 +65,51 @@ async function calcRequestedHours(userId, startISO, endISO) {
       },
       status: { not: "cancelled" },
     },
-    select: { assignedDate: true },
+    select: {
+      assignedDate: true,
+      shift: { select: { startTime: true, endTime: true, crossesMidnight: true } },
+    },
   });
 
-  // Build a Set of assigned shift date strings (YYYY-MM-DD) in company timezone
-  const shiftDateSet = new Set(
-    userShifts.map((us) => moment(us.assignedDate).tz(tz).format("YYYY-MM-DD"))
-  );
+  // Build a Map: dateStr → actual shift hours for that day
+  const shiftHoursMap = new Map();
+  for (const us of userShifts) {
+    if (!us.shift) continue;
+    const dateStr = moment(us.assignedDate).tz(tz).format("YYYY-MM-DD");
+    const s = us.shift.startTime;
+    const e = us.shift.endTime;
+    let hrs = (e.getTime() - s.getTime()) / 36e5;
+    if (us.shift.crossesMidnight || hrs < 0) hrs += 24;
+    shiftHoursMap.set(dateStr, (shiftHoursMap.get(dateStr) || 0) + hrs);
+  }
 
-  const hasShifts = shiftDateSet.size > 0;
+  const hasShifts = shiftHoursMap.size > 0;
 
-  // ── 3. Walk each calendar day and count deductible days ────────────────────
-  let deductibleDays = 0;
+  // ── 3. Walk each calendar day and accumulate hours ─────────────────────────
+  let totalHours = 0;
   const cursor = startDate.clone();
 
   while (cursor.isSameOrBefore(endDate, "day")) {
-    const dateStr  = cursor.format("YYYY-MM-DD");
+    const dateStr   = cursor.format("YYYY-MM-DD");
     const dayOfWeek = cursor.day(); // 0 = Sunday, 6 = Saturday
 
-    const isWeekend  = dayOfWeek === 0 || dayOfWeek === 6;
-    const isHoliday  = holidaySet.has(dateStr);
-    const hasShift   = shiftDateSet.has(dateStr);
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const isHoliday = holidaySet.has(dateStr);
 
     if (!isWeekend && !isHoliday) {
       if (hasShifts) {
-        // Shift-assigned employee: only count days with an actual assigned shift
-        if (hasShift) deductibleDays++;
+        // Shift-assigned employee: use actual scheduled shift hours for the day
+        if (shiftHoursMap.has(dateStr)) totalHours += shiftHoursMap.get(dateStr);
       } else {
-        // Salaried/unassigned employee: count all non-weekend, non-holiday weekdays
-        deductibleDays++;
+        // Salaried/unassigned employee: fall back to company default shift hours
+        totalHours += shiftHours;
       }
     }
 
     cursor.add(1, "day");
   }
 
-  return +(deductibleDays * shiftHours).toFixed(2);
+  return +totalHours.toFixed(2);
 }
 
 function monthlyIncrement(policy, defaultShiftHours = 8) {
