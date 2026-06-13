@@ -25,6 +25,7 @@ const {
   getCutoffSummary,
   approveOtBlock,
   resetApproval,
+  setPunchType,
 } = require("@controllers/Features/cutoffPeriodController");
 
 // ============================================================================
@@ -116,6 +117,19 @@ router.patch(
   authenticate,
   authorizeRoles("admin", "supervisor", "superadmin"),
   approveOtBlock
+);
+
+/**
+ * @route   PATCH /api/cutoff-periods/:id/approvals/:approvalId/set-punch-type
+ * @desc    DayCare only — change a pending punch type between REGULAR and TRAINING
+ * @body    { punchType: "TRAINING" | "REGULAR" }
+ * @access  Admin, Supervisor, Superadmin
+ */
+router.patch(
+  "/:id/approvals/:approvalId/set-punch-type",
+  authenticate,
+  authorizeRoles("admin", "supervisor", "superadmin"),
+  setPunchType
 );
 
 /**

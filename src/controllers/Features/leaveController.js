@@ -24,6 +24,16 @@ async function _resolvePolicy(leaveType, companyId) {
   return policy;
 }
 
+// ─── Attach requestedHours to a list of already-formatted leave records ───────
+async function _attachRequestedHours(leaves) {
+  const hours = await Promise.all(
+    leaves.map((l) =>
+      calcRequestedHours(l.userId, l.startDate, l.endDate).catch(() => null)
+    )
+  );
+  return leaves.map((l, i) => ({ ...l, requestedHours: hours[i] }));
+}
+
 // ─── Replace policy IDs with human-readable names on a list of leave records ─
 async function _attachPolicyNames(leaves) {
   const ids = [...new Set(leaves.map((l) => l.leaveType).filter(Boolean))];
@@ -388,8 +398,9 @@ const getUserLeaves = async (req, res) => {
     orderBy: { startDate: "desc" },
   });
 
-  const formatted = await _attachPolicyNames(leaves);
-  const data = formatted.map((l) => {
+  const withNames = await _attachPolicyNames(leaves);
+  const withHours = await _attachRequestedHours(withNames);
+  const data = withHours.map((l) => {
     const raw = leaves.find((r) => r.id === l.id);
     return {
       ...l,
@@ -444,8 +455,9 @@ const getPendingLeavesForApprover = async (req, res) => {
     orderBy: { createdAt: "desc" },
   });
 
-  const formatted = await _attachPolicyNames(leaves);
-  const data = formatted.map((l) => {
+  const withNames = await _attachPolicyNames(leaves);
+  const withHours = await _attachRequestedHours(withNames);
+  const data = withHours.map((l) => {
     const raw = leaves.find((r) => r.id === l.id);
     const canAct =
       (raw.status === "pending"           && raw.approverId          === req.user.id) ||
@@ -525,8 +537,9 @@ const getLeavesForApprover = async (req, res) => {
     prisma.leave.count({ where }),
   ]);
 
-  const formatted = await _attachPolicyNames(leaves);
-  const data = formatted.map((l) => {
+  const withNames = await _attachPolicyNames(leaves);
+  const withHours = await _attachRequestedHours(withNames);
+  const data = withHours.map((l) => {
     const raw = leaves.find((r) => r.id === l.id);
     const canAct =
       (raw.status === "pending"           && raw.approverId          === req.user.id) ||

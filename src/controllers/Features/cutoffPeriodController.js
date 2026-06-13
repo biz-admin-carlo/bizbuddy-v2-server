@@ -79,17 +79,27 @@ function enrichApprovals(approvals, gracePeriodMinutes) {
     let segRawOtMinutes   = 0;
 
     if (isDriverAide) {
+      // segScheduledHours = the full segment window duration (segmentEnd − segmentStart).
+      // segmentHours      = actual hours worked within the window (from computeTimeLogSummary),
+      //                     falling back to the window duration when not yet computed.
+      const windowHours = approval.segmentStart && approval.segmentEnd
+        ? parseFloat(((new Date(approval.segmentEnd) - new Date(approval.segmentStart)) / 3600000).toFixed(2))
+        : null;
+
       if (segmentType === "driver_am") {
-        segmentHours      = parseFloat(tl.driverAmSegmentHours ?? 0);
+        const stored  = tl.driverAmSegmentHours != null ? parseFloat(tl.driverAmSegmentHours.toString()) : null;
+        segmentHours      = stored ?? windowHours;
         segLateHours      = lateHours; // AM is the late-bearing segment (earliest shift)
-        segScheduledHours = segmentHours;
+        segScheduledHours = windowHours ?? stored;
       } else if (segmentType === "regular") {
-        segmentHours      = parseFloat(tl.regularSegmentHours ?? 0);
-        segScheduledHours = segmentHours;
+        const stored  = tl.regularSegmentHours != null ? parseFloat(tl.regularSegmentHours.toString()) : null;
+        segmentHours      = stored ?? windowHours;
+        segScheduledHours = windowHours ?? stored;
       } else if (segmentType === "driver_pm") {
-        segmentHours      = parseFloat(tl.driverPmSegmentHours ?? 0);
+        const stored  = tl.driverPmSegmentHours != null ? parseFloat(tl.driverPmSegmentHours.toString()) : null;
+        segmentHours      = stored ?? windowHours;
         segUndertimeHours = undertimeHours; // PM is the undertime-bearing segment (latest shift)
-        segScheduledHours = segmentHours;
+        segScheduledHours = windowHours ?? stored;
         segRawOtMinutes   = rawOtMinutes;
       }
     } else {
@@ -815,14 +825,25 @@ const syncCutoffApprovals = async (req, res) => {
       where: { cutoffPeriodId: id },
     });
 
+    // Recompute OT blocks for all employees in this cutoff — picks up any logic
+    // changes (e.g. TRAINING exclusion) and resets changed blocks to pending.
+    let otRecomputed = false;
+    try {
+      await recomputeAllOtForCutoff(id, companyId);
+      otRecomputed = true;
+    } catch (otErr) {
+      console.error("[sync] OT recompute failed:", otErr.message);
+    }
+
     const parts = [];
     if (created > 0)         parts.push(`${created} new approval record(s) created`);
     if (recomputed > 0)      parts.push(`${recomputed} time log(s) recomputed`);
     if (recomputeFailed > 0) parts.push(`${recomputeFailed} recompute(s) failed`);
+    if (otRecomputed)        parts.push("OT blocks recomputed");
 
     return res.status(200).json({
       message: `Sync complete. ${parts.length > 0 ? parts.join(", ") + "." : "Already in sync — nothing to do."}`,
-      data: { created, total, recomputed, recomputeFailed },
+      data: { created, total, recomputed, recomputeFailed, otRecomputed },
     });
   } catch (error) {
     console.error("❌ syncCutoffApprovals:", error);
@@ -851,12 +872,13 @@ const getCutoffApprovals = async (req, res) => {
     // EOD calculation before any other company-dependent logic runs.
     const company = await prisma.company.findUnique({
       where: { id: companyId },
-      select: { gracePeriodMinutes: true, timeZone: true, otBasis: true, dailyOtThresholdHours: true },
+      select: { gracePeriodMinutes: true, timeZone: true, otBasis: true, dailyOtThresholdHours: true, cutoffOtThresholdHours: true },
     });
-    const gracePeriodMinutes    = company?.gracePeriodMinutes ?? 15;
-    const companyTimezone       = company?.timeZone || "Asia/Manila";
-    const otBasis               = company?.otBasis || "daily";
-    const dailyOtThresholdHours = parseFloat(company?.dailyOtThresholdHours ?? 8);
+    const gracePeriodMinutes     = company?.gracePeriodMinutes ?? 15;
+    const companyTimezone        = company?.timeZone || "America/Los_Angeles";
+    const otBasis                = company?.otBasis || "daily";
+    const dailyOtThresholdHours  = parseFloat(company?.dailyOtThresholdHours  ?? 8);
+    const cutoffOtThresholdHours = parseFloat(company?.cutoffOtThresholdHours ?? 80);
 
     // ✅ AUTO-SYNC: if this is an open cutoff with no approval records yet,
     // create them now. Covers manually created cutoffs and backfilled periods.
@@ -1110,10 +1132,11 @@ const getCutoffApprovals = async (req, res) => {
       });
     }
 
-    // For B&C: fetch OT blocks for this cutoff and include in the response.
-    // The client uses these to render the OT approval row per employee-day.
+    // Fetch OT blocks for companies that use block-based OT (B&C daily, DayCare cutoff-basis).
+    // The client uses these to render the OT approval row per employee.
+    const hasOtBlocks = BNC_COMPANY_IDS.has(companyId) || otBasis === "cutoff";
     let otBlocks = [];
-    if (BNC_COMPANY_IDS.has(companyId)) {
+    if (hasOtBlocks) {
       otBlocks = await prisma.cutoffOtBlock.findMany({
         where: { cutoffPeriodId: id },
         orderBy: [{ date: "asc" }],
@@ -1138,6 +1161,7 @@ const getCutoffApprovals = async (req, res) => {
       companyTimezone,
       otBasis,
       dailyOtThresholdHours,
+      cutoffOtThresholdHours,
       isBNC:                 BNC_COMPANY_IDS.has(companyId),
       synced:                true,
     });
@@ -1166,7 +1190,7 @@ const getPendingApprovals = async (req, res) => {
       select: { gracePeriodMinutes: true, timeZone: true },
     });
     const gracePeriodMinutes  = company?.gracePeriodMinutes ?? 15;
-    const companyTimezone     = company?.timeZone || "Asia/Manila";
+    const companyTimezone     = company?.timeZone || "America/Los_Angeles";
 
     const approvals = await prisma.timeLogApproval.findMany({
       where: { cutoffPeriodId: id, status: "pending" },
@@ -1505,6 +1529,76 @@ const approveOtBlock = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PATCH /api/cutoff-periods/:id/approvals/:approvalId/set-punch-type
+ *
+ * DayCare only. Changes a pending punch's type between REGULAR and TRAINING
+ * before it is approved. Allows the admin to designate a training day during
+ * cutoff review without touching any other approval state.
+ *
+ * Body: { punchType: "TRAINING" | "REGULAR" }
+ */
+const setPunchType = async (req, res) => {
+  try {
+    const { id, approvalId } = req.params;
+    const { punchType }      = req.body;
+    const companyId          = req.user.companyId;
+
+    if (BNC_COMPANY_IDS.has(companyId)) {
+      return res.status(400).json({ message: "Punch type designation is not available for this company type." });
+    }
+
+    const ALLOWED = ["TRAINING", "REGULAR"];
+    if (!ALLOWED.includes(punchType)) {
+      return res.status(400).json({ message: `punchType must be one of: ${ALLOWED.join(", ")}.` });
+    }
+
+    const cutoffPeriod = await findCutoffForCompany(id, companyId);
+    if (!cutoffPeriod) {
+      return res.status(404).json({ message: "Cutoff period not found." });
+    }
+    if (cutoffPeriod.status === "locked" || cutoffPeriod.status === "processed") {
+      return res.status(400).json({ message: `Cannot modify a ${cutoffPeriod.status} cutoff period.` });
+    }
+
+    const approval = await prisma.timeLogApproval.findUnique({
+      where:   { id: approvalId },
+      include: { timeLog: { select: { id: true, punchType: true } } },
+    });
+
+    if (!approval || approval.cutoffPeriodId !== id) {
+      return res.status(404).json({ message: "Approval record not found in this cutoff period." });
+    }
+    if (approval.status !== "pending") {
+      return res.status(400).json({ message: `Cannot change punch type on an already ${approval.status} record.` });
+    }
+
+    const current = approval.timeLog?.punchType;
+    if (!ALLOWED.includes(current)) {
+      return res.status(400).json({ message: `Punch type ${current} cannot be changed via this endpoint.` });
+    }
+    if (current === punchType) {
+      return res.status(400).json({ message: `Punch type is already ${punchType}.` });
+    }
+
+    await prisma.timeLog.update({
+      where: { id: approval.timeLog.id },
+      data:  { punchType },
+    });
+
+    console.log(`[✅ DayCare] Punch type ${current} → ${punchType} — ${approvalId}`);
+    return res.status(200).json({
+      message: `Punch type updated to ${punchType}.`,
+      data:    { approvalId, previousPunchType: current, punchType },
+    });
+  } catch (error) {
+    console.error("❌ setPunchType:", error);
+    return res.status(500).json({ message: "Internal server error.", error: error.message });
+  }
+};
+
 module.exports = {
   createCutoffPeriod,
   getCutoffPeriods,
@@ -1521,4 +1615,5 @@ module.exports = {
   getCutoffSummary,
   approveOtBlock,
   resetApproval,
+  setPunchType,
 };

@@ -1,18 +1,20 @@
 // src/services/cutoff/cutoffOtService.js
 //
-// Computes and persists CutoffOtBlock records for B&C companies.
+// Computes and persists CutoffOtBlock records.
 //
-// Logic (daily OT basis):
-//   Sum netWorkedHours of all *approved* TimeLogApproval records for a given
-//   employee on a given calendar day within the cutoff. If the total exceeds
-//   dailyOtThresholdHours, upsert a CutoffOtBlock with otHours = excess.
-//   If the total drops to/below the threshold (e.g. after an edit), delete
-//   the block so it disappears from the review page.
+// Supported otBasis values:
+//
+//   "daily"  — B&C: sum approved hours per employee per calendar day.
+//              If total > company.dailyOtThresholdHours, upsert one block per day.
+//
+//   "cutoff" — DayCare: sum approved hours per employee across the entire cutoff
+//              period. If total > company.cutoffOtThresholdHours, upsert one block
+//              using the cutoff periodEnd as the date key.
+//
+// "weekly" remains a no-op.
 //
 // Upsert resets status to "pending" whenever otHours changes — the admin must
 // re-approve after any punch edit that alters the OT amount.
-//
-// Only "daily" otBasis is implemented. Weekly/cutoff are no-ops for now.
 
 const { prisma } = require("@config/connection");
 const moment     = require("moment-timezone");
@@ -104,8 +106,84 @@ async function computeOtForEmployeeDay(cutoffPeriodId, userId, dateStr, companyI
 }
 
 /**
+ * Recompute the OT block for one employee across the entire cutoff period.
+ * Used when otBasis === "cutoff" (e.g. DayCare with 80h/period threshold).
+ *
+ * One CutoffOtBlock per employee per cutoff, keyed on the cutoff's periodEnd date.
+ *
+ * @param {string} cutoffPeriodId
+ * @param {string} userId
+ * @param {string} companyId
+ */
+async function computeOtForCutoffBasis(cutoffPeriodId, userId, companyId) {
+  const company = await prisma.company.findUnique({
+    where:  { id: companyId },
+    select: { otBasis: true, cutoffOtThresholdHours: true },
+  });
+  if (!company || company.otBasis !== "cutoff") return;
+
+  const threshold = parseFloat(company.cutoffOtThresholdHours ?? 80);
+
+  const cutoffPeriod = await prisma.cutoffPeriod.findUnique({
+    where:  { id: cutoffPeriodId },
+    select: { periodEnd: true },
+  });
+  if (!cutoffPeriod) return;
+
+  const approved = await prisma.timeLogApproval.findMany({
+    where: {
+      cutoffPeriodId,
+      status:  "approved",
+      timeLog: { userId, punchType: { not: "TRAINING" } },
+    },
+    select: {
+      actualHours:      true,
+      approvedClockIn:  true,
+      approvedClockOut: true,
+      timeLog: { select: { netWorkedHours: true } },
+    },
+  });
+
+  const totalHours = approved.reduce((sum, a) => {
+    if (a.actualHours != null) return sum + parseFloat(a.actualHours.toString());
+    if (a.approvedClockIn && a.approvedClockOut) {
+      return sum + (new Date(a.approvedClockOut) - new Date(a.approvedClockIn)) / 3600000;
+    }
+    return sum + parseFloat(a.timeLog?.netWorkedHours?.toString() ?? 0);
+  }, 0);
+
+  const otHours = parseFloat(Math.max(0, totalHours - threshold).toFixed(2));
+  const date    = cutoffPeriod.periodEnd;
+
+  if (otHours > 0) {
+    const existing = await prisma.cutoffOtBlock.findUnique({
+      where: { cutoffPeriodId_userId_date: { cutoffPeriodId, userId, date } },
+      select: { otHours: true },
+    });
+
+    const currentOt    = existing ? parseFloat(existing.otHours.toString()) : null;
+    const hoursChanged = currentOt === null || Math.abs(currentOt - otHours) >= 0.01;
+
+    await prisma.cutoffOtBlock.upsert({
+      where:  { cutoffPeriodId_userId_date: { cutoffPeriodId, userId, date } },
+      create: { cutoffPeriodId, userId, date, otHours, status: "pending" },
+      update: hoursChanged ? { otHours, status: "pending" } : { otHours },
+    });
+
+    console.log(`[OT] Upserted cutoff block — ${userId}: ${otHours}h OT (${totalHours.toFixed(2)}h total vs ${threshold}h threshold)`);
+  } else {
+    const deleted = await prisma.cutoffOtBlock.deleteMany({
+      where: { cutoffPeriodId, userId, date },
+    });
+    if (deleted.count > 0) {
+      console.log(`[OT] Removed cutoff block — ${userId}: total hours now ≤ threshold`);
+    }
+  }
+}
+
+/**
  * Called after a single punch approval or edit.
- * Derives the employee and calendar date from the TimeLog, then recomputes.
+ * Dispatches to the correct OT computation based on company.otBasis.
  *
  * @param {string} timeLogId
  * @param {string} cutoffPeriodId
@@ -116,23 +194,31 @@ async function recomputeOtForTimeLog(timeLogId, cutoffPeriodId, companyId) {
     where:  { id: companyId },
     select: { otBasis: true, timeZone: true },
   });
-  if (!company || company.otBasis !== "daily") return;
+  if (!company) return;
 
-  const timeLog = await prisma.timeLog.findUnique({
-    where:  { id: timeLogId },
-    select: { userId: true, timeIn: true },
-  });
-  if (!timeLog) return;
-
-  const tz      = company.timeZone || "America/Los_Angeles";
-  const dateStr = moment.tz(timeLog.timeIn, tz).format("YYYY-MM-DD");
-
-  await computeOtForEmployeeDay(cutoffPeriodId, timeLog.userId, dateStr, companyId);
+  if (company.otBasis === "daily") {
+    const timeLog = await prisma.timeLog.findUnique({
+      where:  { id: timeLogId },
+      select: { userId: true, timeIn: true },
+    });
+    if (!timeLog) return;
+    const tz      = company.timeZone || "America/Los_Angeles";
+    const dateStr = moment.tz(timeLog.timeIn, tz).format("YYYY-MM-DD");
+    await computeOtForEmployeeDay(cutoffPeriodId, timeLog.userId, dateStr, companyId);
+  } else if (company.otBasis === "cutoff") {
+    const timeLog = await prisma.timeLog.findUnique({
+      where:  { id: timeLogId },
+      select: { userId: true },
+    });
+    if (!timeLog) return;
+    await computeOtForCutoffBasis(cutoffPeriodId, timeLog.userId, companyId);
+  }
+  // "weekly" remains a no-op
 }
 
 /**
- * Called after bulk approval or sync — recomputes OT for every distinct
- * employee-day that has at least one approved punch in this cutoff.
+ * Called after bulk approval or sync — recomputes OT for every affected
+ * employee in this cutoff. Dispatches on company.otBasis.
  *
  * @param {string} cutoffPeriodId
  * @param {string} companyId
@@ -142,35 +228,49 @@ async function recomputeAllOtForCutoff(cutoffPeriodId, companyId) {
     where:  { id: companyId },
     select: { otBasis: true, timeZone: true },
   });
-  if (!company || company.otBasis !== "daily") return;
-
-  const tz = company.timeZone || "America/Los_Angeles";
+  if (!company) return;
 
   const approved = await prisma.timeLogApproval.findMany({
     where:   { cutoffPeriodId, status: "approved" },
     include: { timeLog: { select: { userId: true, timeIn: true } } },
   });
 
-  // Deduplicate to unique userId + dateStr pairs.
-  const seen = new Set();
-  const pairs = [];
-  for (const a of approved) {
-    if (!a.timeLog) continue;
-    const dateStr = moment.tz(a.timeLog.timeIn, tz).format("YYYY-MM-DD");
-    const key = `${a.timeLog.userId}:${dateStr}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      pairs.push({ userId: a.timeLog.userId, dateStr });
-    }
-  }
+  if (company.otBasis === "daily") {
+    const tz = company.timeZone || "America/Los_Angeles";
 
-  for (const { userId, dateStr } of pairs) {
-    try {
-      await computeOtForEmployeeDay(cutoffPeriodId, userId, dateStr, companyId);
-    } catch (err) {
-      console.error(`[OT] recomputeAllOtForCutoff failed for ${userId} on ${dateStr}:`, err.message);
+    // Deduplicate to unique userId + dateStr pairs.
+    const seen  = new Set();
+    const pairs = [];
+    for (const a of approved) {
+      if (!a.timeLog) continue;
+      const dateStr = moment.tz(a.timeLog.timeIn, tz).format("YYYY-MM-DD");
+      const key = `${a.timeLog.userId}:${dateStr}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        pairs.push({ userId: a.timeLog.userId, dateStr });
+      }
+    }
+
+    for (const { userId, dateStr } of pairs) {
+      try {
+        await computeOtForEmployeeDay(cutoffPeriodId, userId, dateStr, companyId);
+      } catch (err) {
+        console.error(`[OT] recomputeAllOtForCutoff (daily) failed for ${userId} on ${dateStr}:`, err.message);
+      }
+    }
+  } else if (company.otBasis === "cutoff") {
+    // Deduplicate to unique userIds — one block covers the whole period per employee.
+    const userIds = [...new Set(approved.filter(a => a.timeLog).map(a => a.timeLog.userId))];
+
+    for (const userId of userIds) {
+      try {
+        await computeOtForCutoffBasis(cutoffPeriodId, userId, companyId);
+      } catch (err) {
+        console.error(`[OT] recomputeAllOtForCutoff (cutoff) failed for ${userId}:`, err.message);
+      }
     }
   }
+  // "weekly" remains a no-op
 }
 
-module.exports = { recomputeOtForTimeLog, recomputeAllOtForCutoff };
+module.exports = { recomputeOtForTimeLog, recomputeAllOtForCutoff, computeOtForCutoffBasis };
